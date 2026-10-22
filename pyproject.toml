@@ -1,0 +1,15 @@
+[project]
+name = "uk-crime-pipeline"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "delta-spark>=4.4.1",
+    "pyspark>=4.2.0",
+    "requests>=2.34.2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.17.1",
+]
