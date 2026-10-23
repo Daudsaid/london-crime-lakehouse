@@ -43,6 +43,12 @@ Idempotency and determinism
 - Re-running any step for the same month gives the same result, with no duplicates.
 - Month-level writes use Delta `replaceWhere` on the month; never blind `append` for
   re-runnable loads, never full-table overwrite to update one month.
+- Dedupe rule (source-specific). Newest archive wins at file grain: for each (force, data
+  month), silver uses the file from the newest archive containing it; rows from older
+  archives for that (force, month) are superseded wholesale (counted as deduped_rows).
+  Within a file: ASB rows (no Crime ID) get a surrogate key = sha2(force, month, row
+  fields) + occurrence number; they are never deduplicated. Duplicate Crime IDs within a
+  file are handled per the rule agreed in the silver stage (open question).
 - Dedupe with an explicit, total ordering (window + row_number with a deterministic
   tie-breaker). Never rely on row order, `dropDuplicates` choosing "any" row, or
   `monotonically_increasing_id` as a key.
@@ -115,4 +121,49 @@ Spark hygiene
 - [ ] Decisions explained; this file updated if anything changed
 
 ## Verified source schema
-(To be filled in after inspecting a real archive.)
+Inspected 2026-10-23 on archive 2026-08.zip (1,733,535,664 bytes compressed, ~7.6 GB
+uncompressed, testzip OK). Re-verify if the source changes.
+
+Archive
+- `archive/latest.zip` 302-redirects to `https://policeuk-data.s3.amazonaws.com/archive/YYYY-MM.zip`
+  (HEAD works, `Accept-Ranges: bytes`). Latest on 2026-10-23 was 2026-08; 2026-09 and 2026-10
+  return 404. Archives are ~1.7 GB each.
+- Layout: 4,489 entries, no directory entries, one folder per data month:
+  `YYYY-MM/YYYY-MM-<force>-<kind>.csv`, kind = `street` | `outcomes` | `stop-and-search`.
+- Window: exactly 36 data months (2023-09 .. 2026-08): the archive month and the 35 before it.
+- 44 force slugs, lower-case-hyphenated (includes `btp`, `northern-ireland`, `city-of-london`,
+  `metropolitan`). Greater Manchester is absent entirely. `btp` has no street file from
+  2025-02 on; `gloucestershire` has none from 2026-02 on. The force set varies by month, so
+  never assume 44 street files per month. Not every force has every kind every month.
+- Met: `2026-08/2026-08-metropolitan-street.csv` and `...-outcomes.csv` (no stop-and-search
+  that month). City of London: `...-city-of-london-street|outcomes|stop-and-search.csv`.
+- Files are UTF-8, no BOM, comma-delimited, quoted, header row, rectangular.
+
+Street CSV (12 columns, in order)
+Crime ID, Month, Reported by, Falls within, Longitude, Latitude, Location, LSOA code,
+LSOA name, Crime type, Last outcome category, Context
+- `Month` is `YYYY-MM` and equals the folder/file month in the files checked.
+- Met 2026-08: 94,515 rows; 21,499 blank Crime ID (all Anti-social behaviour); 73,015 distinct
+  IDs; 1 Crime ID appears twice inside the same file (Met 2023-09 also has repeats), so
+  dedupe must also handle duplicates within a single file.
+- Blanks are empty strings. `Last outcome category` is blank for ~22% of Met rows.
+
+Outcomes CSV (10 columns)
+Crime ID, Month, Reported by, Falls within, Longitude, Latitude, Location, LSOA code,
+LSOA name, Outcome type
+- Met 2026-08: 76,778 rows, 0 blank Crime ID, 73,701 distinct (a crime can have several
+  outcome rows). Separate event stream; out of scope until after street.
+
+Stop-and-search: not inspected (out of scope).
+
+Data-quality facts that drive the rules above
+- Greater Manchester is absent from the archive; the force set varies by month (`btp` and
+  `gloucestershire` gaps). Extract must handle per-month gaps, not assume a fixed set.
+- ASB rows have no Crime ID. Identical ASB rows are distinct incidents (locations are
+  anonymised to snap points), so they must never be deduplicated. Met 2026-08: 21,499 ASB
+  rows but only 11,990 distinct, with 13,854 rows in repeated groups.
+- Met 2026-08 has one Crime ID appearing twice within the same file (lines 47212 and 47214),
+  and the two rows are identical in every column:
+  `9eccc281...b6854 | 2026-08 | Metropolitan Police Service | Metropolitan Police Service |
+  -0.372945 | 51.457471 | On or near Wellington Road South | E01002652 | Hounslow 021D |
+  Public order | Under investigation | (blank)`.
