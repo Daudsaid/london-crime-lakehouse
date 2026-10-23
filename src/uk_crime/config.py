@@ -18,6 +18,7 @@ LAKEHOUSE_DIR: Path = DATA_DIR / "lakehouse"
 BRONZE_DIR: Path = LAKEHOUSE_DIR / "bronze"
 SILVER_DIR: Path = LAKEHOUSE_DIR / "silver"
 GOLD_DIR: Path = LAKEHOUSE_DIR / "gold"
+BRONZE_STREET_TABLE: Path = BRONZE_DIR / "crimes_street"
 
 ARCHIVE_BASE_URL: str = "https://data.police.uk/data/archive"
 KEEP_ARCHIVES: bool = os.environ.get("UK_CRIME_KEEP_ARCHIVES", "true").lower() == "true"

@@ -26,8 +26,17 @@ Data lives in data/ (gitignored): landing/, lakehouse/{bronze,silver,gold}/.
 
 ### Layer contracts (strict)
 - Extract only moves bytes. It never parses, renames or filters columns.
-- Bronze only adds metadata (_source_file, _ingested_at, _month). It never drops, casts or
-  fixes data. Bronze is the replayable source of truth.
+- Bronze only adds metadata. It never drops, casts, cleans or dedupes data. Bronze is the
+  replayable source of truth. One Delta table, BRONZE_DIR/crimes_street, partitioned by
+  _archive_month, loaded per archive with replaceWhere. Columns: the 12 source columns as
+  strings (renamed to snake_case only because Delta rejects spaces: crime_id, month,
+  reported_by, falls_within, longitude, latitude, location, lsoa_code, lsoa_name,
+  crime_type, last_outcome_category, context), _corrupt_record, plus metadata parsed from
+  the file path with anchored regexes (no partition discovery): _archive_month DATE,
+  _month DATE, _force STRING, _source_file STRING (path relative to LANDING_DIR, e.g.
+  archive=2026-08/month=2026-08/2026-08-metropolitan-street.csv), _ingested_at TIMESTAMP
+  (one value per run). Blank CSV cells are NULL. The CSV header is checked against the
+  schema (enforceSchema=false), so header drift fails the load.
 - All business logic lives in silver and gold. Gold reads only from silver, never bronze.
 
 ## 4. Data source facts
@@ -48,7 +57,10 @@ Idempotency and determinism
   archives for that (force, month) are superseded wholesale (counted as deduped_rows).
   Within a file: ASB rows (no Crime ID) get a surrogate key = sha2(force, month, row
   fields) + occurrence number; they are never deduplicated. Duplicate Crime IDs within a
-  file are handled per the rule agreed in the silver stage (open question).
+  file: within the selected file grain (_force, _month from the newest archive), rows
+  sharing a Crime ID that are identical across all 12 source columns collapse to one (the
+  extras count as deduped_rows). If they differ in any source column, quarantine ALL copies
+  with _dq_reason = 'conflicting_duplicate_crime_id'. No tie-breaks.
 - Dedupe with an explicit, total ordering (window + row_number with a deterministic
   tie-breaker). Never rely on row order, `dropDuplicates` choosing "any" row, or
   `monotonically_increasing_id` as a key.
@@ -167,3 +179,19 @@ Data-quality facts that drive the rules above
   `9eccc281...b6854 | 2026-08 | Metropolitan Police Service | Metropolitan Police Service |
   -0.372945 | 51.457471 | On or near Wellington Road South | E01002652 | Hounslow 021D |
   Public order | Under investigation | (blank)`.
+
+Bronze survey: Crime IDs repeating within a file (archive 2026-08, run 2026-10-23)
+- Bronze holds 3,440,762 rows from 72 files (metropolitan, city-of-london; 36 months each),
+  0 rows in _corrupt_record.
+- 47 of the 72 files contain repeated Crime IDs: 21,564 repeated IDs, 24,090 extra rows.
+  19,861 of those 21,564 groups (92%) are NOT identical across the 12 source columns.
+- Where they differ (a group can differ in several columns): last_outcome_category 19,294
+  (14,978 differ in that column only), crime_type 4,626, longitude/latitude ~257,
+  location 255, lsoa_code/lsoa_name 137. Never month, reported_by, falls_within or context.
+- Pattern: Metropolitan repeats are heavy in 2023-09..2024-02 (about 1,200-3,400 IDs per
+  file) and 2025-06..2026-04 (about 500-850 per file), and absent in 2024-03..2025-04;
+  City of London has them in 2023-09..2025-05 (6-27 per file) and a few later. The one
+  repeat in Met 2026-08 is the identical pair above. Most repeated groups have 2 rows
+  (max 10).
+- Consequence: the quarantine-all rule would quarantine 19,861 Crime IDs (42,019
+  rows, 1.5% of the 2,738,089 rows that have a Crime ID) in this archive, mostly because last_outcome_category differs. Rule under review.
