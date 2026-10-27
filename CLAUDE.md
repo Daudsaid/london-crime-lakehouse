@@ -55,12 +55,30 @@ Idempotency and determinism
 - Dedupe rule (source-specific). Newest archive wins at file grain: for each (force, data
   month), silver uses the file from the newest archive containing it; rows from older
   archives for that (force, month) are superseded wholesale (counted as deduped_rows).
-  Within a file: ASB rows (no Crime ID) get a surrogate key = sha2(force, month, row
-  fields) + occurrence number; they are never deduplicated. Duplicate Crime IDs within a
-  file: within the selected file grain (_force, _month from the newest archive), rows
-  sharing a Crime ID that are identical across all 12 source columns collapse to one (the
-  extras count as deduped_rows). If they differ in any source column, quarantine ALL copies
-  with _dq_reason = 'conflicting_duplicate_crime_id'. No tie-breaks.
+  Within-file duplicate Crime IDs (grain: _force, _month, crime_id within the selected
+  archive):
+  1. Rows identical across all 12 source columns collapse to one -> deduped_rows.
+  2. If the distinct variants differ and exactly ONE distinct variant has a progressed
+     outcome (all others are placeholders), keep it; the others are superseded_rows. Set
+     dq_attribute_conflict = true on the kept row if crime_type, location, lat/long or LSOA
+     differed among the variants.
+  3. Otherwise quarantine all copies with _dq_reason = 'conflicting_duplicate_crime_id'.
+  4. ASB rows (no Crime ID) are never deduplicated: surrogate key = sha2(force, month, row
+     fields) + occurrence number.
+  Outcome vocabulary: two explicit named lists in silver.py, never inferred.
+  PLACEHOLDER_OUTCOMES = NULL, "Status update unavailable", "Under investigation".
+  PROGRESSED_OUTCOMES = every other value observed in 2026-08: "Investigation complete; no
+  suspect identified", "Unable to prosecute suspect", "Court result unavailable", "Local
+  resolution", "Awaiting court outcome", "Action to be taken by another organisation",
+  "Offender given a caution", "Offender given penalty notice", "Formal action is not in the
+  public interest", "Further investigation is not in the public interest", "Further action
+  is not in the public interest", "Offender given a drugs possession warning", "Suspect
+  charged as part of another case". "Awaiting court outcome" is progressed because it
+  records a real action (the suspect was charged; in the outcomes files it is "Suspect
+  charged"), not a missing status. A value in neither list must raise with the value, so a
+  new police.uk category is a visible decision, not a silent misclassification.
+  Rationale and evidence: docs/duplicate-crime-ids.md. The outcomes-file cross-check there
+  is validation only, never a silver input.
 - Dedupe with an explicit, total ordering (window + row_number with a deterministic
   tie-breaker). Never rely on row order, `dropDuplicates` choosing "any" row, or
   `monotonically_increasing_id` as a key.
@@ -68,8 +86,10 @@ Idempotency and determinism
   sentinel first (concat_ws silently skips nulls and causes collisions).
 
 No silent data loss
-- Every row from bronze ends up in silver or in quarantine with a `_dq_reason`. Log the counts
-  and assert bronze_rows == silver_rows + quarantined_rows + deduped_rows for the month.
+- Every row from bronze ends up in silver or in quarantine with a `_dq_reason`. Log each
+  class per run and assert bronze_rows == silver_rows + quarantined_rows + deduped_rows +
+  superseded_rows for the month (deduped = identical copies and older-archive files;
+  superseded = placeholder copies replaced by the progressed variant).
 - Fail loudly: raise on unexpected states. No bare `except`, no `except Exception: pass`.
 
 Schemas
@@ -193,5 +213,7 @@ Bronze survey: Crime IDs repeating within a file (archive 2026-08, run 2026-10-2
   City of London has them in 2023-09..2025-05 (6-27 per file) and a few later. The one
   repeat in Met 2026-08 is the identical pair above. Most repeated groups have 2 rows
   (max 10).
-- Consequence: the quarantine-all rule would quarantine 19,861 Crime IDs (42,019
-  rows, 1.5% of the 2,738,089 rows that have a Crime ID) in this archive, mostly because last_outcome_category differs. Rule under review.
+- Consequence: quarantine-all would have quarantined 19,861 Crime IDs (42,019 rows, 1.5% of
+  the 2,738,089 rows that have a Crime ID) in this archive, mostly because
+  last_outcome_category differs. The outcome-precedence rule above quarantines 599 Crime IDs
+  (1,279 rows) instead; see docs/duplicate-crime-ids.md.
