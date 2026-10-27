@@ -18,9 +18,11 @@ over clever.
 src/uk_crime/
 - config.py: every path and setting; env-var overridable. Nothing else hard-codes paths.
 - spark.py: local SparkSession with Delta (local[*], shuffle partitions 8, UTC).
-- extract.py (E): download archives → data/landing/month=YYYY-MM/, files untouched.
+- extract.py (E): download archives → data/landing/archive=YYYY-MM/month=YYYY-MM/, files untouched.
 - bronze.py (L): landing CSVs → bronze Delta, all columns string + metadata. No cleaning.
-- silver.py (T): typed, cleaned, deduplicated, quality-checked; bad rows → quarantine.
+- silver.py (T): typed, cleaned, deduplicated, quality-checked; bad rows → quarantine. A full
+  rebuild from bronze on every run (see section 5). Tables: SILVER_DIR/crimes_street and
+  SILVER_DIR/crimes_street_quarantine.
 - gold.py (T): Spark SQL star schema (fct_crimes, dim_*) and marts.
 Data lives in data/ (gitignored): landing/, lakehouse/{bronze,silver,gold}/.
 
@@ -50,8 +52,18 @@ Data lives in data/ (gitignored): landing/, lakehouse/{bronze,silver,gold}/.
 ## 5. Reliability guardrails (non-negotiable)
 Idempotency and determinism
 - Re-running any step for the same month gives the same result, with no duplicates.
-- Month-level writes use Delta `replaceWhere` on the month; never blind `append` for
-  re-runnable loads, never full-table overwrite to update one month.
+- Bronze loads use Delta `replaceWhere` on the archive month; never blind `append` for
+  re-runnable loads, never full-table overwrite to update one archive.
+- Silver is the exception: every archive restates all 36 months, so silver is a full
+  rebuild from bronze on every run, written as one atomic Delta overwrite per table
+  (quarantine first, then silver). It is deterministic, so re-runs give identical output
+  (checked by row count and an order-independent checksum over record_key and over all
+  silver columns except _run_id).
+- Two-table consistency pattern: the two overwrites are separate Delta commits, so a crash
+  between them leaves new quarantine beside old silver. Every row in both tables carries
+  `_run_id` (one UUID per run; also written as the Delta commit's userMetadata, which
+  identifies the run of an empty table). `silver.assert_silver_consistent()` raises unless
+  both tables hold exactly one `_run_id` and it is the same one; gold must call it first.
 - Dedupe rule (source-specific). Newest archive wins at file grain: for each (force, data
   month), silver uses the file from the newest archive containing it; rows from older
   archives for that (force, month) are superseded wholesale (counted as deduped_rows).
@@ -86,15 +98,32 @@ Idempotency and determinism
   sentinel first (concat_ws silently skips nulls and causes collisions).
 
 No silent data loss
-- Every row from bronze ends up in silver or in quarantine with a `_dq_reason`. Log each
-  class per run and assert bronze_rows == silver_rows + quarantined_rows + deduped_rows +
-  superseded_rows for the month (deduped = identical copies and older-archive files;
-  superseded = placeholder copies replaced by the progressed variant).
+- Every row from bronze ends up in exactly one class. Log each class per run and assert
+  bronze = silver + quarantined + deduped + superseded + archive_replaced, where
+  deduped = identical copies within a file; superseded = placeholder copies replaced by
+  the progressed variant (R5); archive_replaced = rows from older archives' copies of a
+  (force, month) file. Quarantined rows keep the raw bronze row and a single `_dq_reason`.
+- Silver row-level DQ uses the FIRST failing rule in this fixed order: corrupt_record,
+  invalid_month (unparseable, or different from the _month in the file path),
+  unexpected_crime_id_presence (ASB with an ID, or non-ASB without one),
+  invalid_coordinates (unparseable, one of the pair missing, or outside the UK box in
+  silver.py). NULL coordinates are valid: the row is kept with has_location = false.
+  Duplicate handling (R5, above) then runs on DQ-passing rows.
+- Vocabulary drift raises, it never quarantines: an outcome in neither named list or a
+  crime_type outside CRIME_TYPES stops the run with the value.
+- Quarantine guardrail: if any single quarantine reason exceeds 0.5% of the rows considered,
+  silver writes nothing and raises with the counts.
 - Fail loudly: raise on unexpected states. No bare `except`, no `except Exception: pass`.
 
 Schemas
 - Explicit StructType for every read (bronze: all StringType). No schema inference.
 - Delta schema enforcement stays on; no `mergeSchema` unless discussed and documented.
+- Derived tables (silver, quarantine, later gold) may change schema only through an explicit
+  opt-in: their expected StructType is defined in code, and if the existing table differs
+  the run fails naming the added, removed and changed columns and telling you to re-run
+  with `--allow-schema-change`. That flag logs the diff at WARNING and rebuilds the table
+  with `overwriteSchema` (safe because they are fully derived from bronze). Bronze never
+  changes schema this way, and the flag is never the default.
 
 Extraction
 - Stream downloads to a temp file, verify (size > 0, `zipfile` opens, testzip passes), then
@@ -113,8 +142,9 @@ Spark hygiene
 - Transformations are pure functions: DataFrame in, DataFrame out. I/O (read/write) stays
   in thin wrapper functions so the logic is unit-testable.
 - Use `logging` (module-level logger), not print. Log row counts at each layer boundary.
-- Each layer is runnable as `uv run python -m uk_crime.<layer> --month YYYY-MM` (and
-  `--all`); exit non-zero on failure.
+- Each layer is runnable as `uv run python -m uk_crime.<layer>`; exit non-zero on failure.
+  extract: `--archive YYYY-MM` or `--latest` (plus `--force`); bronze: `--archive YYYY-MM`
+  or `--all`; silver: `--all` (always a full rebuild).
 - No secrets or credentials in code. No hard-coded absolute paths.
 - Code must pass `ruff check` and `ruff format`. Don't add `noqa` without a written reason.
 
