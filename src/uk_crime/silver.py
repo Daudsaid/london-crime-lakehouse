@@ -549,17 +549,17 @@ def overwrite_table(
     writer.save(str(path))
 
 
-def table_run_ids(spark: SparkSession, path: Path) -> set[str]:
+def table_run_ids(spark: SparkSession, path: Path, column: str = "_run_id") -> set[str]:
     """Return the run ids a table holds.
 
-    That is the distinct _run_id values of its rows or, for an empty table, the run id on
-    its latest Delta commit.
+    That is the distinct values of `column` (default _run_id) or, for an empty table, the
+    run id on its latest Delta commit. Gold reuses this with column="_silver_run_id".
     """
     try:
         table = spark.read.format("delta").load(str(path))
     except AnalysisException as err:
         raise ConsistencyError(f"{path} is missing or not a Delta table") from err
-    ids = {r[0] for r in table.select("_run_id").distinct().collect()}
+    ids = {r[0] for r in table.select(column).distinct().collect()}
     if ids:
         return ids
     latest = (

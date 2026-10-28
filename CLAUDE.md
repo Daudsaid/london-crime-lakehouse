@@ -23,7 +23,19 @@ src/uk_crime/
 - silver.py (T): typed, cleaned, deduplicated, quality-checked; bad rows → quarantine. A full
   rebuild from bronze on every run (see section 5). Tables: SILVER_DIR/crimes_street and
   SILVER_DIR/crimes_street_quarantine.
-- gold.py (T): Spark SQL star schema (fct_crimes, dim_*) and marts.
+- gold.py (T): Spark SQL star schema and marts, a full rebuild from silver on every run (one
+  atomic overwrite per table under GOLD_DIR). Dimensions dim_date (month grain, UK financial
+  year Apr-Mar), dim_force, dim_crime_type (explicit severity_tier mapping), dim_outcome
+  (status from the silver lists, explicit outcome_group mapping), dim_lsoa (local_authority =
+  lsoa_name without its trailing code); each has an UNKNOWN member so fact keys are never
+  NULL. fct_crimes is one row per silver record. Marts: mart_monthly_crimes,
+  mart_outcome_rates (non-ASB, excludes the newest OUTCOME_MATURITY_MONTHS = 6 months) and
+  mart_lsoa_ranking (newest LSOA_RANKING_MONTHS = 12 months, London LSOAs only via
+  dim_lsoa.is_london, crime_count excludes ASB with asb_count alongside, ranked within
+  local_authority, counts not rates). is_london is a name match against LONDON_AUTHORITIES
+  (known limitation, see docs/data-caveats.md). All tables carry _silver_run_id; gold calls assert_silver_consistent() first
+  and assert_gold_consistent() checks that all nine tables share one _silver_run_id. An
+  unmapped force, crime type or outcome raises.
 Data lives in data/ (gitignored): landing/, lakehouse/{bronze,silver,gold}/.
 
 ### Layer contracts (strict)
@@ -144,7 +156,8 @@ Spark hygiene
 - Use `logging` (module-level logger), not print. Log row counts at each layer boundary.
 - Each layer is runnable as `uv run python -m uk_crime.<layer>`; exit non-zero on failure.
   extract: `--archive YYYY-MM` or `--latest` (plus `--force`); bronze: `--archive YYYY-MM`
-  or `--all`; silver: `--all` (always a full rebuild).
+  or `--all`; silver and gold: `--all` (always a full rebuild; `--allow-schema-change` is the
+  only way to change an existing derived table's schema).
 - No secrets or credentials in code. No hard-coded absolute paths.
 - Code must pass `ruff check` and `ruff format`. Don't add `noqa` without a written reason.
 

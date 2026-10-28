@@ -29,6 +29,13 @@ FORCES: tuple[str, ...] = tuple(
     for f in os.environ.get("UK_CRIME_FORCES", "metropolitan,city-of-london").split(",")
     if f.strip()
 )
+# Gold marts: the newest N months have immature outcomes and are left out of the outcome
+# mart; the LSOA ranking covers the newest M months. Both are relative to the latest month
+# in silver, not to today's date.
+OUTCOME_MATURITY_MONTHS: int = int(
+    os.environ.get("UK_CRIME_OUTCOME_MATURITY_MONTHS", "6")
+)
+LSOA_RANKING_MONTHS: int = int(os.environ.get("UK_CRIME_LSOA_RANKING_MONTHS", "12"))
 HTTP_TIMEOUT: tuple[float, float] = (10.0, 60.0)  # (connect, read) seconds
 HTTP_MAX_ATTEMPTS: int = 5
 
