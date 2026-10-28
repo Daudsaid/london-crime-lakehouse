@@ -49,6 +49,16 @@ src/uk_crime/
   baseline (median of months older than 18 months). Set from archive 2026-08; re-check
   when a new archive lands (analyses/profile_outcome_maturity.py, evidence in
   docs/data-caveats.md). 2024-10 (25.6% placeholder share) is excluded from this mart only.
+- export.py: after gold.assert_gold_consistent(), writes a small Parquet snapshot of three marts
+  (plus LSOA centroids), a reconciliation table from silver's run summary
+  (SILVER_DIR/run_summary.json, written at the end of each silver run) and snapshot.json to
+  dashboard/data/ (committed, under 1 MB). It refuses a run summary from a different silver
+  run than the one gold was built from.
+- dashboard/app.py: Streamlit page that reads only dashboard/data/ (no Spark, no data/).
+  Its dependencies are in the separate `dashboard` uv group (streamlit, plotly); the
+  pipeline's own dependencies are unchanged (pandas is pinned <3 there). app.py must not import
+  uk_crime or pyspark; dashboard/requirements.txt (generated with `uv export`, see its header)
+  lets it be deployed on its own. `make export` refreshes the snapshot, `make dashboard` runs it.
 Data lives in data/ (gitignored): landing/, lakehouse/{bronze,silver,gold}/.
 
 ### Layer contracts (strict)

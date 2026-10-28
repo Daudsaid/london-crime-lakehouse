@@ -14,7 +14,9 @@ Pipeline order (each step is a plain DataFrame function):
 """
 
 import argparse
+import json
 import logging
+import os
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -535,6 +537,43 @@ def check_output_schema(df: DataFrame, expected: StructType, name: str) -> None:
 # --------------------------------------------------------------------------- I/O
 
 
+def build_run_summary(
+    run_id: str,
+    created_at: datetime,
+    archive_months: Sequence[str],
+    bronze_rows: int,
+    classes: dict[str, int],
+    quarantine_reasons: dict[str, int],
+    asb_rows: int,
+    no_location_rows: int,
+    attribute_conflict_rows: int,
+) -> dict[str, object]:
+    """Return the reconciliation summary of one silver run (JSON-serialisable)."""
+    return {
+        "silver_run_id": run_id,
+        "created_at": created_at.astimezone(UTC).isoformat(timespec="seconds"),
+        "archive_months": sorted(archive_months),
+        "bronze_rows": bronze_rows,
+        "classes": dict(classes),
+        "quarantine_reasons": dict(quarantine_reasons),
+        "asb_rows": asb_rows,
+        "no_location_rows": no_location_rows,
+        "attribute_conflict_rows": attribute_conflict_rows,
+    }
+
+
+def write_run_summary(summary: dict[str, object], path: Path) -> None:
+    """Write the run summary as JSON, atomically (temp file then rename).
+
+    The dashboard export reads this file because the reconciliation counts are otherwise
+    only in the run log. It is written last, after both tables and their consistency check.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(".json.tmp")
+    temp.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+    os.replace(temp, path)
+
+
 def overwrite_table(
     df: DataFrame, path: Path, run_id: str, overwrite_schema: bool = False
 ) -> None:
@@ -647,6 +686,9 @@ def run_silver(
                 "silver tables hold a run id other than the one just written"
             )
         logger.info("run_id=%s written to both silver tables", run_id)
+        # Free the cached rows before the read-back checks: on a small machine the cache
+        # plus the verification scan can exhaust the 4g heap.
+        classified.unpersist()
 
         written = spark.read.format("delta").load(str(config.SILVER_STREET_TABLE))
         fingerprint = checksums(written)
@@ -666,6 +708,24 @@ def run_silver(
             ),
             F.sum(F.col("is_asb").cast("int")).alias("asb"),
         ).first()
+        archive_months = [
+            f"{r[0]:%Y-%m}"
+            for r in written.select("_archive_month").distinct().collect()
+        ]
+        write_run_summary(
+            build_run_summary(
+                run_id,
+                datetime.now(UTC),
+                archive_months,
+                bronze_rows,
+                classes,
+                reasons,
+                flags["asb"],
+                flags["no_location"],
+                flags["attribute_conflict"],
+            ),
+            config.SILVER_RUN_SUMMARY,
+        )
         logger.info(
             "silver rows=%d asb=%d has_location=false:%d dq_attribute_conflict=true:%d",
             fingerprint["rows"], flags["asb"], flags["no_location"], flags["attribute_conflict"],

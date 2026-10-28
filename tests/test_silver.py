@@ -357,6 +357,7 @@ def tables(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "BRONZE_STREET_TABLE", tmp_path / "bronze")
     monkeypatch.setattr(config, "SILVER_STREET_TABLE", tmp_path / "silver")
     monkeypatch.setattr(config, "SILVER_QUARANTINE_TABLE", tmp_path / "quarantine")
+    monkeypatch.setattr(config, "SILVER_RUN_SUMMARY", tmp_path / "run_summary.json")
 
 
 def mixed_rows() -> list[dict[str, Any]]:
@@ -640,3 +641,51 @@ def test_main_still_requires_all_when_flag_is_given() -> None:
     with pytest.raises(SystemExit) as exc:
         silver.main(["--allow-schema-change"])
     assert exc.value.code == 2
+
+
+# ------------------------------------------------------------------- run summary
+
+
+def test_run_summary_has_the_reconciliation_and_is_written_atomically(
+    tmp_path: Path,
+) -> None:
+    summary = silver.build_run_summary(
+        "run-9",
+        datetime(2026, 10, 28, 12, 30, tzinfo=UTC),
+        ["2026-08", "2026-07"],
+        bronze_rows=10,
+        classes={"silver": 7, "quarantined": 1, "deduped": 1, "superseded": 1},
+        quarantine_reasons={"invalid_month": 1},
+        asb_rows=2,
+        no_location_rows=1,
+        attribute_conflict_rows=0,
+    )
+    path = tmp_path / "out" / "run_summary.json"
+    silver.write_run_summary(summary, path)
+
+    import json
+
+    assert json.loads(path.read_text()) == summary
+    assert summary["archive_months"] == ["2026-07", "2026-08"]
+    assert summary["created_at"] == "2026-10-28T12:30:00+00:00"
+    assert not list(path.parent.glob("*.tmp"))
+
+
+@pytest.mark.slow
+def test_run_silver_writes_a_summary_that_matches_the_run(
+    spark: SparkSession, tables: None
+) -> None:
+    import json
+
+    bronze(spark, mixed_rows()).write.format("delta").save(
+        str(config.BRONZE_STREET_TABLE)
+    )
+    stats = silver.run_silver(spark, max_quarantine_fraction=1.0)
+
+    summary = json.loads(config.SILVER_RUN_SUMMARY.read_text())
+    assert summary["silver_run_id"] == stats["run_id"]
+    assert summary["bronze_rows"] == stats["bronze_rows"] == 9
+    assert summary["classes"] == stats["classes"]
+    assert summary["quarantine_reasons"] == {"invalid_month": 1}
+    assert summary["archive_months"] == ["2026-08"]
+    assert summary["asb_rows"] == 3

@@ -1,0 +1,32 @@
+{
+  "archive_month": "2026-08",
+  "archive_months": [
+    "2026-08"
+  ],
+  "exported_at": "2026-10-28T15:49:03+00:00",
+  "file_bytes": {
+    "mart_lsoa_ranking.parquet": 154283,
+    "mart_monthly_crimes.parquet": 6374,
+    "mart_outcome_rates.parquet": 3880,
+    "reconciliation.parquet": 1719
+  },
+  "lsoa_window": {
+    "first": "2025-09",
+    "last": "2026-08"
+  },
+  "months": {
+    "first": "2023-09",
+    "last": "2026-08"
+  },
+  "outcome": {
+    "excluded_months": [
+      "2024-10"
+    ],
+    "first_month": "2023-09",
+    "last_month": "2025-04",
+    "maturity_months": 16,
+    "months_used": 19
+  },
+  "silver_run_at": "2026-10-28T15:45:59+00:00",
+  "silver_run_id": "cc5eb122-b0cc-4062-8fc1-b353d87f6c6d"
+}

@@ -1,6 +1,7 @@
 """Shared pytest fixtures."""
 
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from pyspark.sql import SparkSession
@@ -30,3 +31,31 @@ def spark() -> Iterator[SparkSession]:
     session = get_spark(TEST_SPARK_SETTINGS)
     yield session
     session.stop()
+
+
+@pytest.fixture
+def export_env(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point silver, gold, the run summary and the dashboard folder at a temp folder.
+
+    Also uses a 6-month outcome window with no excluded months. Returns the dashboard
+    data folder.
+    """
+    from uk_crime import config
+
+    monkeypatch.setattr(
+        config, "SILVER_STREET_TABLE", tmp_path / "silver" / "crimes_street"
+    )
+    monkeypatch.setattr(
+        config,
+        "SILVER_QUARANTINE_TABLE",
+        tmp_path / "silver" / "crimes_street_quarantine",
+    )
+    monkeypatch.setattr(
+        config, "SILVER_RUN_SUMMARY", tmp_path / "silver" / "run_summary.json"
+    )
+    monkeypatch.setattr(config, "GOLD_DIR", tmp_path / "gold")
+    monkeypatch.setattr(config, "TMP_DIR", tmp_path / "_tmp")
+    monkeypatch.setattr(config, "DASHBOARD_DATA_DIR", tmp_path / "dashboard_data")
+    monkeypatch.setattr(config, "OUTCOME_MATURITY_MONTHS", 6)
+    monkeypatch.setattr(config, "OUTCOME_EXCLUDED_MONTHS", ())
+    return tmp_path / "dashboard_data"
