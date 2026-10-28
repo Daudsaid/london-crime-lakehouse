@@ -40,21 +40,27 @@ src/uk_crime/
   and OUTCOME_EXCLUDED_MONTHS = 2024-10, and records the months used and excluded) and
   mart_lsoa_ranking (newest LSOA_RANKING_MONTHS = 12 months, London LSOAs only via
   dim_lsoa.is_london, crime_count excludes ASB with asb_count alongside, ranked within
-  local_authority, counts not rates). is_london is a name match against LONDON_AUTHORITIES
+  local_authority, counts not rates). Borough marts (London LSOAs only, so rows outside
+  London and rows with no LSOA are the difference to fct_crimes): mart_borough_monthly
+  (local_authority, month, crime_type, is_asb, crime_count) and mart_borough_outcomes (same
+  window, exclusions and non-ASB rule as mart_outcome_rates; share within borough and crime
+  type). is_london is a name match against LONDON_AUTHORITIES
   (known limitation, see docs/data-caveats.md). All tables carry _silver_run_id; gold
-  calls assert_silver_consistent() first and assert_gold_consistent() checks that all nine
+  calls assert_silver_consistent() first and assert_gold_consistent() checks that all eleven
   tables share one _silver_run_id. An unmapped force, crime type or outcome raises.
   Outcome maturity rule: exclude the smallest number of most-recent months so that every
   remaining month newer than the baseline window has a placeholder share within 2pp of the
   baseline (median of months older than 18 months). Set from archive 2026-08; re-check
   when a new archive lands (analyses/profile_outcome_maturity.py, evidence in
   docs/data-caveats.md). 2024-10 (25.6% placeholder share) is excluded from this mart only.
-- export.py: after gold.assert_gold_consistent(), writes a small Parquet snapshot of three marts
+- export.py: after gold.assert_gold_consistent(), writes a small Parquet snapshot of five marts
   (plus LSOA centroids), a reconciliation table from silver's run summary
   (SILVER_DIR/run_summary.json, written at the end of each silver run) and snapshot.json to
   dashboard/data/ (committed, under 1 MB). It refuses a run summary from a different silver
   run than the one gold was built from.
-- dashboard/app.py: Streamlit page that reads only dashboard/data/ (no Spark, no data/).
+- dashboard/app.py: Streamlit page that reads only dashboard/data/ (no Spark, no data/). A
+  sidebar borough selector (All London + the 33 boroughs) is synced to ?borough=<name>; an
+  unknown name falls back to All London.
   Its dependencies are in the separate `dashboard` uv group (streamlit, plotly); the
   pipeline's own dependencies are unchanged (pandas is pinned <3 there). app.py must not import
   uk_crime or pyspark; dashboard/requirements.txt (generated with `uv export`, see its header)

@@ -561,6 +561,182 @@ def test_monthly_mart_counts_by_month_force_and_crime_type(spark: SparkSession) 
     }
 
 
+# ------------------------------------------------------------------ borough marts
+
+CAMDEN = {"lsoa_code": "E01A", "lsoa_name": "Camden 001A"}
+HOUNSLOW = {"lsoa_code": "E01H", "lsoa_name": "Hounslow 021D"}
+EPPING = {"lsoa_code": "E01X", "lsoa_name": "Epping Forest 001A"}  # outside London
+NO_LSOA = {"lsoa_code": None, "lsoa_name": None}
+
+
+def test_borough_monthly_counts_london_boroughs_only_and_flags_asb(
+    spark: SparkSession,
+) -> None:
+    rows = [
+        crime(month=date(2026, 8, 1), **CAMDEN),
+        crime(month=date(2026, 8, 1), **CAMDEN),
+        asb(month=date(2026, 8, 1), **CAMDEN),
+        crime(month=date(2026, 7, 1), **CAMDEN),
+        crime(month=date(2026, 8, 1), **HOUNSLOW),
+        crime(month=date(2026, 8, 1), **EPPING),  # outside London: not in the mart
+        crime(month=date(2026, 8, 1), **NO_LSOA),  # unknown LSOA: not in the mart
+    ]
+    mart = gold.build_gold(silver_df(spark, rows))["mart_borough_monthly"]
+    got = {
+        (r["local_authority"], r["month"], r["crime_type"], r["is_asb"]): r[
+            "crime_count"
+        ]
+        for r in mart.collect()
+    }
+    assert got == {
+        ("Camden", date(2026, 8, 1), "Burglary", False): 2,
+        ("Camden", date(2026, 8, 1), "Anti-social behaviour", True): 1,
+        ("Camden", date(2026, 7, 1), "Burglary", False): 1,
+        ("Hounslow", date(2026, 8, 1), "Burglary", False): 1,
+    }
+
+
+def test_all_33_boroughs_appear_in_both_borough_marts(spark: SparkSession) -> None:
+    rows = [
+        crime(
+            lsoa_code=f"E01{i:04d}",
+            lsoa_name=f"{authority} 001A",
+            month=date(2025, 1, 1),  # mature under the 6-month test window
+        )
+        for i, authority in enumerate(gold.LONDON_AUTHORITIES)
+    ]
+    rows.append(crime(month=date(2026, 8, 1)))  # sets the latest month
+    built = gold.build_gold(silver_df(spark, rows))
+
+    for name in ("mart_borough_monthly", "mart_borough_outcomes"):
+        boroughs = {
+            r[0] for r in built[name].select("local_authority").distinct().collect()
+        }
+        assert boroughs == set(gold.LONDON_AUTHORITIES), name
+
+
+def test_borough_marts_reconcile_to_the_fact(spark: SparkSession) -> None:
+    rows = [
+        crime(month=date(2025, 1, 1), **CAMDEN),
+        crime(month=date(2025, 1, 1), **CAMDEN),
+        asb(month=date(2025, 1, 1), **CAMDEN),
+        crime(month=date(2025, 1, 1), **EPPING),
+        crime(month=date(2025, 1, 1), **EPPING),
+        crime(month=date(2025, 1, 1), **NO_LSOA),
+        crime(month=date(2026, 8, 1), **HOUNSLOW),  # immature: only in the monthly mart
+        asb(month=date(2026, 8, 1), **EPPING),
+    ]
+    crimes = silver_df(spark, rows)
+    stats = gold.reconcile_gold(gold.build_gold(crimes), crimes.count(), 6, 12)
+
+    assert stats["borough_monthly_rows"] == 4  # Camden x3, Hounslow x1
+    assert (stats["non_london_rows"], stats["unknown_lsoa_rows_all_months"]) == (3, 1)
+    assert stats["borough_monthly_rows"] + 3 + 1 == crimes.count()
+    assert stats["borough_outcome_rows"] == 2  # Camden's two mature non-ASB crimes
+    assert stats["mature_non_london_rows"] == 3  # Epping x2 and the unknown LSOA
+
+
+def test_borough_outcomes_use_the_outcome_mart_window_and_exclusions(
+    spark: SparkSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(config, "OUTCOME_EXCLUDED_MONTHS", ("2025-06",))
+    rows = [
+        crime(
+            month=date(2025, 5, 1), last_outcome_category="Local resolution", **CAMDEN
+        ),
+        crime(
+            month=date(2025, 6, 1), last_outcome_category="Local resolution", **CAMDEN
+        ),
+        crime(
+            month=date(2025, 7, 1),
+            last_outcome_category="Unable to prosecute suspect",
+            **CAMDEN,
+        ),
+        crime(
+            month=date(2025, 7, 1),
+            last_outcome_category="Unable to prosecute suspect",
+            **HOUNSLOW,
+        ),
+        crime(
+            month=date(2026, 3, 1), last_outcome_category="Local resolution", **CAMDEN
+        ),  # immature
+        asb(month=date(2025, 7, 1), **CAMDEN),  # ASB: never
+        crime(
+            month=date(2025, 7, 1), last_outcome_category="Local resolution", **EPPING
+        ),
+        crime(month=date(2026, 8, 1), **CAMDEN),
+    ]
+    built = gold.build_gold(silver_df(spark, rows))
+    mart = built["mart_borough_outcomes"]
+
+    got = {
+        (r["local_authority"], r["outcome_group"]): r["crime_count"]
+        for r in mart.collect()
+    }
+    assert got == {
+        ("Camden", "out_of_court"): 1,
+        ("Camden", "no_further_action"): 1,
+        ("Hounslow", "no_further_action"): 1,
+    }
+    first = mart.first()
+    assert (first["first_month"], first["last_month"]) == (
+        date(2025, 5, 1),
+        date(2025, 7, 1),
+    )
+    assert (first["months_used"], first["excluded_months"]) == (2, "2025-06")
+    assert mart.where("crime_type = 'Anti-social behaviour'").count() == 0
+    # the same rows as mart_outcome_rates, less the one outside-London crime
+    total = built["mart_outcome_rates"].agg(F.sum("crime_count")).first()[0]
+    assert total == mart.agg(F.sum("crime_count")).first()[0] + 1
+
+
+def test_borough_outcome_shares_sum_to_one_within_each_borough_and_crime_type(
+    spark: SparkSession,
+) -> None:
+    rows = [
+        crime(
+            month=date(2025, 1, 1), last_outcome_category="Local resolution", **CAMDEN
+        ),
+        crime(
+            month=date(2025, 1, 1), last_outcome_category="Local resolution", **CAMDEN
+        ),
+        crime(
+            month=date(2025, 1, 1),
+            last_outcome_category="Under investigation",
+            **CAMDEN,
+        ),
+        crime(
+            month=date(2025, 1, 1), last_outcome_category="Local resolution", **HOUNSLOW
+        ),
+        crime(month=date(2026, 8, 1), **CAMDEN),
+    ]
+    mart = gold.build_gold(silver_df(spark, rows))["mart_borough_outcomes"]
+    shares = {
+        (r["local_authority"], r["outcome_group"]): r["share_of_crime_type"]
+        for r in mart.collect()
+    }
+    assert shares[("Camden", "out_of_court")] == pytest.approx(2 / 3)
+    assert shares[("Camden", "pending")] == pytest.approx(1 / 3)
+    assert shares[("Hounslow", "out_of_court")] == pytest.approx(1.0)
+
+
+def test_reconcile_raises_when_a_borough_mart_loses_rows(spark: SparkSession) -> None:
+    rows = [
+        crime(month=date(2025, 1, 1), **CAMDEN),
+        crime(month=date(2026, 8, 1), **CAMDEN),
+    ]
+    crimes = silver_df(spark, rows)
+    built = gold.build_gold(crimes)
+
+    broken = {**built, "mart_borough_monthly": built["mart_borough_monthly"].limit(1)}
+    with pytest.raises(gold.GoldReconciliationError, match="mart_borough_monthly"):
+        gold.reconcile_gold(broken, crimes.count(), 6, 12)
+
+    broken = {**built, "mart_borough_outcomes": built["mart_borough_outcomes"].limit(0)}
+    with pytest.raises(gold.GoldReconciliationError, match="mart_borough_outcomes"):
+        gold.reconcile_gold(broken, crimes.count(), 6, 12)
+
+
 # ------------------------------------------------------------ primary-key uniqueness
 
 

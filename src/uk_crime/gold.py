@@ -1,6 +1,6 @@
 """Gold (T): star schema and marts built only from silver.
 
-Full rebuild on every run: dimensions, fct_crimes and three marts, each written as one
+Full rebuild on every run: dimensions, fct_crimes and five marts, each written as one
 atomic Delta overwrite and tagged with _silver_run_id (silver's _run_id) for lineage.
 gold first calls silver.assert_silver_consistent(); every transformation is Spark SQL over
 temp views wrapped in a function that takes and returns DataFrames.
@@ -101,6 +101,8 @@ TABLES = (
     "mart_monthly_crimes",
     "mart_outcome_rates",
     "mart_lsoa_ranking",
+    "mart_borough_monthly",
+    "mart_borough_outcomes",
 )
 MONTH_NAMES = [
     "January",
@@ -201,6 +203,18 @@ SCHEMAS: dict[str, StructType] = {
         ("asb_count", LongType()), ("rank_in_local_authority", IntegerType()),
         ("first_month", DateType()),
         ("last_month", DateType()), _LINEAGE,
+    ),
+    "mart_borough_monthly": _schema(
+        ("local_authority", StringType()), ("month", DateType()),
+        ("crime_type", StringType()), ("is_asb", BooleanType()),
+        ("crime_count", LongType()), _LINEAGE,
+    ),
+    "mart_borough_outcomes": _schema(
+        ("local_authority", StringType()), ("crime_type", StringType()),
+        ("outcome_group", StringType()), ("crime_count", LongType()),
+        ("share_of_crime_type", DoubleType()), ("first_month", DateType()),
+        ("last_month", DateType()), ("months_used", IntegerType()),
+        ("excluded_months", StringType()), _LINEAGE,
     ),
 }  # fmt: skip
 
@@ -424,6 +438,18 @@ def build_mart_monthly_crimes(
     """)
 
 
+def _excluded_months_sql(excluded_months: Sequence[str]) -> tuple[list[str], str]:
+    """Validate YYYY-MM exclusions; return them sorted and as a SQL condition on f.month."""
+    bad = [m for m in excluded_months if not MONTH_RE.match(m)]
+    if bad:
+        raise GoldError(f"excluded months must look like YYYY-MM: {bad}")
+    excluded = sorted(set(excluded_months))
+    if not excluded:
+        return excluded, ""
+    listed = ", ".join(f"'{m}'" for m in excluded)
+    return excluded, f"AND date_format(f.month, 'yyyy-MM') NOT IN ({listed})"
+
+
 def build_mart_outcome_rates(
     fct: DataFrame,
     dim_date: DataFrame,
@@ -438,14 +464,7 @@ def build_mart_outcome_rates(
     yet) and the `excluded_months` (YYYY-MM outliers). first_month/last_month/months_used
     record the months actually used and excluded_months the listed exclusions.
     """
-    bad = [m for m in excluded_months if not MONTH_RE.match(m)]
-    if bad:
-        raise GoldError(f"excluded months must look like YYYY-MM: {bad}")
-    excluded = sorted(set(excluded_months))
-    exclusion_sql = ""
-    if excluded:
-        listed = ", ".join(f"'{m}'" for m in excluded)
-        exclusion_sql = f"AND date_format(f.month, 'yyyy-MM') NOT IN ({listed})"
+    excluded, exclusion_sql = _excluded_months_sql(excluded_months)
     spark = _register(
         fct_crimes=fct, dim_date=dim_date, dim_crime_type=dim_crime_type,
         dim_outcome=dim_outcome,
@@ -515,6 +534,80 @@ def build_mart_lsoa_ranking(
     """)
 
 
+def build_mart_borough_monthly(
+    fct: DataFrame, dim_date: DataFrame, dim_lsoa: DataFrame, dim_crime_type: DataFrame
+) -> DataFrame:
+    """Record counts per London borough, month and crime type (ASB flagged, not removed).
+
+    London LSOAs only (dim_lsoa.is_london); rows outside London or with no LSOA are not
+    in this mart. Counts, not rates.
+    """
+    spark = _register(
+        fct_crimes=fct,
+        dim_date=dim_date,
+        dim_lsoa=dim_lsoa,
+        dim_crime_type=dim_crime_type,
+    )
+    return spark.sql("""
+        SELECT l.local_authority, d.month, ct.crime_type, f.is_asb, count(*) AS crime_count
+        FROM fct_crimes f
+        JOIN dim_date d ON d.month_key = f.month_key
+        JOIN dim_lsoa l ON l.lsoa_code = f.lsoa_code AND l.is_london
+        JOIN dim_crime_type ct ON ct.crime_type_key = f.crime_type_key
+        GROUP BY l.local_authority, d.month, ct.crime_type, f.is_asb
+    """)
+
+
+def build_mart_borough_outcomes(
+    fct: DataFrame,
+    dim_date: DataFrame,
+    dim_lsoa: DataFrame,
+    dim_crime_type: DataFrame,
+    dim_outcome: DataFrame,
+    maturity_months: int,
+    excluded_months: Sequence[str] = (),
+) -> DataFrame:
+    """Outcome-group counts and shares per London borough and crime type.
+
+    The same window as mart_outcome_rates (non-ASB, the newest `maturity_months` months
+    and the `excluded_months` left out), restricted to London LSOAs. The share is within
+    a borough and crime type.
+    """
+    excluded, exclusion_sql = _excluded_months_sql(excluded_months)
+    spark = _register(
+        fct_crimes=fct, dim_date=dim_date, dim_lsoa=dim_lsoa,
+        dim_crime_type=dim_crime_type, dim_outcome=dim_outcome,
+    )  # fmt: skip
+    return spark.sql(f"""
+        WITH f AS (
+            SELECT fc.*, d.month FROM fct_crimes fc
+            JOIN dim_date d ON d.month_key = fc.month_key
+        ),
+        latest AS (SELECT max(month) AS latest FROM f),
+        mature AS (
+            SELECT f.*, l.local_authority FROM f CROSS JOIN latest
+            JOIN dim_lsoa l ON l.lsoa_code = f.lsoa_code AND l.is_london
+            WHERE NOT f.is_asb AND f.month <= add_months(latest.latest, -{int(maturity_months)})
+              {exclusion_sql}
+        ),
+        counted AS (
+            SELECT m.local_authority, m.crime_type_key, o.outcome_group, count(*) AS crime_count,
+                   min(m.month) AS first_month, max(m.month) AS last_month
+            FROM mature m JOIN dim_outcome o ON o.outcome_key = m.outcome_key
+            GROUP BY m.local_authority, m.crime_type_key, o.outcome_group
+        )
+        SELECT c.local_authority, ct.crime_type, c.outcome_group, c.crime_count,
+               c.crime_count / sum(c.crime_count)
+                   OVER (PARTITION BY c.local_authority, c.crime_type_key)
+                   AS share_of_crime_type,
+               min(c.first_month) OVER () AS first_month,
+               max(c.last_month) OVER () AS last_month,
+               CAST((SELECT count(DISTINCT month) FROM mature) AS INT) AS months_used,
+               '{",".join(excluded)}' AS excluded_months
+        FROM counted c JOIN dim_crime_type ct ON ct.crime_type_key = c.crime_type_key
+    """)
+
+
 # ---------------------------------------------------------------- orchestration
 
 
@@ -546,6 +639,18 @@ def build_gold(crimes: DataFrame) -> dict[str, DataFrame]:
         ),
         "mart_lsoa_ranking": build_mart_lsoa_ranking(
             fct, dim_date, dim_lsoa, config.LSOA_RANKING_MONTHS
+        ),
+        "mart_borough_monthly": build_mart_borough_monthly(
+            fct, dim_date, dim_lsoa, dim_crime_type
+        ),
+        "mart_borough_outcomes": build_mart_borough_outcomes(
+            fct,
+            dim_date,
+            dim_lsoa,
+            dim_crime_type,
+            dim_outcome,
+            config.OUTCOME_MATURITY_MONTHS,
+            config.OUTCOME_EXCLUDED_MONTHS,
         ),
     }
 
@@ -658,6 +763,42 @@ def reconcile_gold(
             outcome_rows_immature=immature,
             outcome_rows_excluded_months=excluded_rows,
             outcome_months_used=used,
+        )
+
+        # Borough marts: London LSOAs only, so rows outside London and rows with no LSOA
+        # are the difference to the fact table.
+        located = dated.join(
+            tables["dim_lsoa"].select("lsoa_code", "is_london"), "lsoa_code"
+        )
+        non_london = located.where(
+            (F.col("lsoa_code") != UNKNOWN_LSOA) & (~F.col("is_london"))
+        ).count()
+        unknown_lsoa = located.where(F.col("lsoa_code") == UNKNOWN_LSOA).count()
+        borough_rows = (
+            tables["mart_borough_monthly"].agg(F.sum("crime_count")).first()[0] or 0
+        )
+        if borough_rows + non_london + unknown_lsoa != silver_rows:
+            raise GoldReconciliationError(
+                f"mart_borough_monthly {borough_rows} + non-London {non_london} + "
+                f"unknown LSOA {unknown_lsoa} != fct {silver_rows}"
+            )
+        mature_not_london = located.where(
+            (~F.col("is_asb")) & in_window & ~listed & ~F.col("is_london")
+        ).count()
+        borough_outcomes = (
+            tables["mart_borough_outcomes"].agg(F.sum("crime_count")).first()[0] or 0
+        )
+        if borough_outcomes != mature - mature_not_london:
+            raise GoldReconciliationError(
+                f"mart_borough_outcomes {borough_outcomes} != mature non-ASB rows "
+                f"{mature} minus non-London/unknown-LSOA rows {mature_not_london}"
+            )
+        stats.update(
+            borough_monthly_rows=borough_rows,
+            non_london_rows=non_london,
+            unknown_lsoa_rows_all_months=unknown_lsoa,
+            borough_outcome_rows=borough_outcomes,
+            mature_non_london_rows=mature_not_london,
         )
 
         recent = dated.where(

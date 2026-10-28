@@ -51,6 +51,14 @@ EXPORT_COLUMNS: dict[str, list[str]] = {
         "lsoa_code", "lsoa_name", "local_authority", "crime_count", "asb_count",
         "rank_in_local_authority", "first_month", "last_month", "latitude", "longitude",
     ],
+    "mart_borough_monthly": [
+        "local_authority", "month", "crime_type", "is_asb", "crime_count",
+    ],
+    "mart_borough_outcomes": [
+        "local_authority", "crime_type", "outcome_group", "crime_count",
+        "share_of_crime_type", "first_month", "last_month", "months_used",
+        "excluded_months",
+    ],
     "reconciliation": ["group", "item", "rows", "share"],
 }  # fmt: skip
 SNAPSHOT_FILE = "snapshot.json"
@@ -161,6 +169,12 @@ def export_tables(
             "crime_type", "outcome_group"
         ),
         "mart_lsoa_ranking": ranking.orderBy("lsoa_code"),
+        "mart_borough_monthly": tables["mart_borough_monthly"].orderBy(
+            "local_authority", "month", "crime_type", "is_asb"
+        ),
+        "mart_borough_outcomes": tables["mart_borough_outcomes"].orderBy(
+            "local_authority", "crime_type", "outcome_group"
+        ),
         "reconciliation": reconciliation_table(
             fct.sparkSession, summary, fct_rows, orphans
         ),
