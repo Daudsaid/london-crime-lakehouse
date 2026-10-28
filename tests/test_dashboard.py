@@ -1,7 +1,7 @@
 """Dashboard tests: the data-loading functions in dashboard/app.py and the page itself.
 
 These need the optional `dashboard` dependency group (pandas, plotly, streamlit); they are
-skipped where it is not installed. The page test runs the real app headlessly against the
+skipped where it is not installed. The page tests run the real app headlessly against the
 committed snapshot in dashboard/data/.
 """
 
@@ -18,7 +18,7 @@ pytest.importorskip("streamlit")
 from streamlit.testing.v1 import AppTest
 
 from tests.test_export import prepare_gold, sample_rows
-from uk_crime import export
+from uk_crime import export, gold
 
 APP_PATH = Path(__file__).resolve().parents[1] / "dashboard" / "app.py"
 COMMITTED_DATA = APP_PATH.parent / "data"
@@ -27,11 +27,18 @@ spec = importlib.util.spec_from_file_location("dashboard_app", APP_PATH)
 app = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
 spec.loader.exec_module(app)  # type: ignore[union-attr]
 
+JULY, AUGUST = pd.Timestamp("2026-07-01"), pd.Timestamp("2026-08-01")
+BOUNDS = (JULY, AUGUST)
+
 
 def write_fake_snapshot(folder: Path) -> None:
-    """Small Parquet files with the exported columns, written with pandas."""
+    """Small Parquet files with the exported columns, written with pandas.
+
+    Two boroughs: Camden (70 crimes + 30 ASB) and Westminster (100 crimes + 20 ASB) in the
+    12-month window, so London is 170 crimes + 50 ASB.
+    """
     folder.mkdir(parents=True)
-    months = pd.to_datetime(["2026-07-01", "2026-08-01"]).date
+    months = [JULY.date(), AUGUST.date()]
     pd.DataFrame(
         {
             "month": [months[0], months[0], months[1]],
@@ -45,8 +52,8 @@ def write_fake_snapshot(folder: Path) -> None:
         {
             "crime_type": ["Burglary", "Burglary"],
             "outcome_group": ["charged_or_court", "no_further_action"],
-            "crime_count": [10, 90],
-            "share_of_crime_type": [0.1, 0.9],
+            "crime_count": [40, 160],
+            "share_of_crime_type": [0.2, 0.8],
             "first_month": [months[0]] * 2,
             "last_month": [months[1]] * 2,
             "months_used": [2, 2],
@@ -55,18 +62,40 @@ def write_fake_snapshot(folder: Path) -> None:
     ).to_parquet(folder / "mart_outcome_rates.parquet")
     pd.DataFrame(
         {
-            "lsoa_code": ["E01A", "E01B"],
-            "lsoa_name": ["Camden 001A", "Camden 002B"],
-            "local_authority": ["Camden"] * 2,
-            "crime_count": [5, 3],
-            "asb_count": [1, 0],
-            "rank_in_local_authority": [1, 2],
-            "first_month": [months[0]] * 2,
-            "last_month": [months[1]] * 2,
-            "latitude": [51.5, None],
-            "longitude": [-0.1, None],
+            "lsoa_code": ["E01A", "E01B", "E01C"],
+            "lsoa_name": ["Camden 001A", "Camden 002B", "Westminster 003C"],
+            "local_authority": ["Camden", "Camden", "Westminster"],
+            "crime_count": [50, 20, 100],
+            "asb_count": [20, 10, 20],
+            "rank_in_local_authority": [1, 2, 1],
+            "first_month": [months[0]] * 3,
+            "last_month": [months[1]] * 3,
+            "latitude": [51.54, None, 51.50],
+            "longitude": [-0.14, None, -0.13],
         }
     ).to_parquet(folder / "mart_lsoa_ranking.parquet")
+    pd.DataFrame(
+        {
+            "local_authority": ["Camden"] * 3 + ["Westminster"] * 2,
+            "month": [months[0], months[0], months[1], months[1], months[1]],
+            "crime_type": ["Burglary", app.ASB, "Burglary", "Burglary", app.ASB],
+            "is_asb": [False, True, False, False, True],
+            "crime_count": [60, 30, 10, 100, 20],
+        }
+    ).to_parquet(folder / "mart_borough_monthly.parquet")
+    pd.DataFrame(
+        {
+            "local_authority": ["Camden", "Camden", "Westminster", "Westminster"],
+            "crime_type": ["Burglary"] * 4,
+            "outcome_group": ["charged_or_court", "no_further_action"] * 2,
+            "crime_count": [10, 90, 30, 70],
+            "share_of_crime_type": [0.1, 0.9, 0.3, 0.7],
+            "first_month": [months[0]] * 4,
+            "last_month": [months[1]] * 4,
+            "months_used": [2] * 4,
+            "excluded_months": ["2024-10"] * 4,
+        }
+    ).to_parquet(folder / "mart_borough_outcomes.parquet")
     pd.DataFrame(
         {
             "group": ["reconciliation", "reconciliation"],
@@ -75,7 +104,26 @@ def write_fake_snapshot(folder: Path) -> None:
             "share": [1.0, 1 / 101],
         }
     ).to_parquet(folder / "reconciliation.parquet")
-    (folder / "snapshot.json").write_text(json.dumps({"archive_month": "2026-08"}))
+    (folder / "snapshot.json").write_text(
+        json.dumps(
+            {
+                "archive_month": "2026-08",
+                "lsoa_window": {"first": "2026-07", "last": "2026-08"},
+            }
+        )
+    )
+
+
+@pytest.fixture
+def fake(tmp_path: Path) -> dict:
+    write_fake_snapshot(tmp_path / "data")
+    return app.load_tables(tmp_path / "data")
+
+
+def committed_tables() -> dict:
+    if not COMMITTED_DATA.is_dir():
+        pytest.skip("no committed snapshot")
+    return app.load_tables(COMMITTED_DATA)
 
 
 # ------------------------------------------------------------- loading functions
@@ -86,68 +134,275 @@ def test_loaders_read_the_exported_files(tmp_path: Path) -> None:
     tables = app.load_tables(tmp_path / "data")
 
     assert set(tables) == set(app.TABLE_NAMES) == set(export.EXPORT_COLUMNS)
-    assert tables["mart_monthly_crimes"]["month"].dtype.kind == "M"  # real datetimes
+    assert tables["mart_borough_monthly"]["month"].dtype.kind == "M"  # real datetimes
+    for name, columns in export.EXPORT_COLUMNS.items():
+        assert list(tables[name].columns) == columns
+    assert app.load_snapshot(tmp_path / "data")["archive_month"] == "2026-08"
+
+
+# ------------------------------------------------------------ borough selection
+
+
+def test_selector_lists_all_london_then_the_boroughs_sorted(fake: dict) -> None:
+    assert app.borough_options(fake["mart_borough_monthly"]) == [
+        "All London",
+        "Camden",
+        "Westminster",
+    ]
+
+
+def test_committed_snapshot_offers_all_london_plus_the_33_boroughs() -> None:
+    options = app.borough_options(committed_tables()["mart_borough_monthly"])
+    assert options[0] == app.ALL_LONDON and len(options) == 34
+    assert options[1:] == sorted(gold.LONDON_AUTHORITIES)
+
+
+@pytest.mark.parametrize(
+    ("requested", "expected"),
+    [
+        (None, "All London"),
+        ("", "All London"),
+        ("Camden", "Camden"),
+        ("camden", "Camden"),  # case-insensitive match
+        (" Westminster ", "Westminster"),
+        ("Atlantis", "All London"),  # unknown names fall back
+        ("All London", "All London"),
+    ],
+)
+def test_url_borough_resolves_or_falls_back(
+    requested: str | None, expected: str
+) -> None:
     assert (
-        list(tables["mart_lsoa_ranking"].columns)
-        == export.EXPORT_COLUMNS["mart_lsoa_ranking"]
+        app.resolve_borough(requested, ["All London", "Camden", "Westminster"])
+        == expected
     )
-    assert app.load_snapshot(tmp_path / "data") == {"archive_month": "2026-08"}
 
 
-def test_headline_figures(tmp_path: Path) -> None:
-    write_fake_snapshot(tmp_path / "data")
-    figures = app.headline_figures(app.load_tables(tmp_path / "data"))
-    assert figures["records"] == 100
-    assert figures["asb_share"] == pytest.approx(0.30)
-    assert figures["charge_rate"] == pytest.approx(0.10)
-    assert figures["quarantined"] == 1
+# --------------------------------------------------------- figures per selection
 
 
-def test_trend_figure_filters_forces_and_asb(tmp_path: Path) -> None:
-    write_fake_snapshot(tmp_path / "data")
-    monthly = app.load_tables(tmp_path / "data")["mart_monthly_crimes"]
-    forces = ["Metropolitan Police Service"]
+def test_headline_figures_for_a_borough_and_for_london(fake: dict) -> None:
+    monthly, outcomes = fake["mart_borough_monthly"], fake["mart_borough_outcomes"]
 
-    with_asb = app.trend_figure(monthly, forces, include_asb=True)
-    without = app.trend_figure(monthly, forces, include_asb=False)
-    assert {t.name for t in with_asb.data} == {"Burglary", app.ASB}
-    assert {t.name for t in without.data} == {"Burglary"}
-    assert len(app.trend_figure(monthly, ["City of London Police"], True).data) == 0
+    camden = app.borough_headline(monthly, outcomes, BOUNDS, "Camden")
+    assert (camden["crimes"], camden["asb"]) == (70, 30)
+    assert camden["asb_share"] == pytest.approx(0.30)
+    assert camden["charge_rate"] == pytest.approx(0.10)
 
-
-def test_hotspot_figure_drops_lsoas_without_coordinates(tmp_path: Path) -> None:
-    write_fake_snapshot(tmp_path / "data")
-    ranking = app.load_tables(tmp_path / "data")["mart_lsoa_ranking"]
-    figure = app.hotspot_figure(ranking, ["Camden"])
-    assert sum(len(t.lat) for t in figure.data) == 1
+    london = app.borough_headline(monthly, outcomes, BOUNDS, app.ALL_LONDON)
+    assert (london["crimes"], london["asb"]) == (170, 50)
+    assert london["charge_rate"] == pytest.approx(40 / 200)
 
 
-def test_outcome_figure_has_one_trace_per_outcome_group(tmp_path: Path) -> None:
-    write_fake_snapshot(tmp_path / "data")
-    outcomes = app.load_tables(tmp_path / "data")["mart_outcome_rates"]
-    assert {t.name for t in app.outcome_figure(outcomes).data} == {
-        "Charged or at court",
-        "No further action",
+def test_the_window_limits_the_headline_to_the_last_12_months(fake: dict) -> None:
+    monthly, outcomes = fake["mart_borough_monthly"], fake["mart_borough_outcomes"]
+    august_only = app.borough_headline(monthly, outcomes, (AUGUST, AUGUST), "Camden")
+    assert august_only["crimes"] == 10 and august_only["asb"] == 0
+
+
+def test_london_comparison_line(fake: dict) -> None:
+    monthly = fake["mart_borough_monthly"]
+    assert "41.2%" in app.london_comparison(monthly, BOUNDS, "Camden")
+    assert "70 of 170" in app.london_comparison(monthly, BOUNDS, "Camden")
+    assert app.london_comparison(monthly, BOUNDS, app.ALL_LONDON).startswith(
+        "All of London: 170"
+    )
+
+
+def test_trend_figure_filters_by_borough_and_asb(fake: dict) -> None:
+    monthly = fake["mart_borough_monthly"]
+
+    def total(figure) -> int:
+        return int(sum(sum(t.y) for t in figure.data))
+
+    assert total(app.trend_figure(monthly, "Camden", True)) == 100
+    assert total(app.trend_figure(monthly, "Camden", False)) == 70
+    assert total(app.trend_figure(monthly, "Westminster", True)) == 120
+    assert total(app.trend_figure(monthly, app.ALL_LONDON, True)) == 220
+    assert {t.name for t in app.trend_figure(monthly, "Camden", False).data} == {
+        "Burglary"
     }
 
 
-@pytest.mark.slow
-def test_loaders_read_what_the_export_writes(spark, export_env: Path) -> None:
-    prepare_gold(spark, sample_rows())
-    export.run_export(spark)
+def test_top_crime_types_figure_filters_by_borough_and_drops_asb(fake: dict) -> None:
+    monthly = fake["mart_borough_monthly"]
+    camden = app.top_crime_types_figure(monthly, BOUNDS, "Camden")
+    assert list(camden.data[0].y) == ["Burglary"] and list(camden.data[0].x) == [70]
+    london = app.top_crime_types_figure(monthly, BOUNDS, app.ALL_LONDON)
+    assert list(london.data[0].x) == [170]
 
-    tables = app.load_tables(export_env)
-    snapshot = app.load_snapshot(export_env)
 
-    for name, columns in export.EXPORT_COLUMNS.items():
-        assert list(tables[name].columns) == columns
-    assert snapshot["archive_month"] == "2026-08"
-    figures = app.headline_figures(tables)
-    assert figures["records"] == len(sample_rows())
-    assert app.hotspot_figure(
+def test_borough_outcomes_filters_and_recomputes_shares(fake: dict) -> None:
+    outcomes = fake["mart_borough_outcomes"]
+    westminster = app.borough_outcomes(outcomes, "Westminster").set_index(
+        "outcome_group"
+    )
+    assert westminster.loc["charged_or_court", "crime_count"] == 30
+    assert westminster.loc["charged_or_court", "share_of_crime_type"] == pytest.approx(
+        0.3
+    )
+
+    london = app.borough_outcomes(outcomes, app.ALL_LONDON).set_index("outcome_group")
+    assert london.loc["charged_or_court", "crime_count"] == 40
+    assert london.loc["charged_or_court", "share_of_crime_type"] == pytest.approx(0.2)
+    assert london["share_of_crime_type"].sum() == pytest.approx(1.0)
+
+
+def test_outcome_figure_has_one_trace_per_outcome_group(fake: dict) -> None:
+    figure = app.outcome_figure(
+        app.borough_outcomes(fake["mart_borough_outcomes"], "Camden")
+    )
+    assert {t.name for t in figure.data} == {"Charged or at court", "No further action"}
+
+
+def test_hotspot_figure_filters_by_borough_and_drops_missing_coordinates(
+    fake: dict,
+) -> None:
+    ranking = fake["mart_lsoa_ranking"]
+    count = lambda figure: sum(len(t.lat) for t in figure.data)
+
+    assert count(app.hotspot_figure(ranking, "Camden")) == 1  # E01B has no coordinates
+    assert count(app.hotspot_figure(ranking, "Westminster")) == 1
+    assert count(app.hotspot_figure(ranking, app.ALL_LONDON)) == 2
+
+
+def test_top_lsoas_are_the_borough_s_biggest(fake: dict) -> None:
+    ranking = fake["mart_lsoa_ranking"]
+    assert list(app.top_lsoas(ranking, "Camden")["lsoa_code"]) == ["E01A", "E01B"]
+    assert list(app.top_lsoas(ranking, app.ALL_LONDON, n=1)["lsoa_code"]) == ["E01C"]
+
+
+def test_map_zooms_further_in_for_a_smaller_area(fake: dict) -> None:
+    ranking = fake["mart_lsoa_ranking"]
+    london_points = ranking[ranking["latitude"].notna()]
+    wide = pd.DataFrame({"latitude": [51.29, 51.69], "longitude": [-0.50, 0.30]})
+    narrow = pd.DataFrame({"latitude": [51.52, 51.56], "longitude": [-0.18, -0.10]})
+
+    wide_centre, wide_zoom = app.map_view(wide)
+    narrow_centre, narrow_zoom = app.map_view(narrow)
+    assert narrow_zoom > wide_zoom + 1
+    assert 8 <= wide_zoom <= 15 and 8 <= narrow_zoom <= 15
+    assert narrow_centre == {"lat": pytest.approx(51.54), "lon": pytest.approx(-0.14)}
+    assert app.map_view(london_points.iloc[0:0])[1] == 9.0  # no points: default view
+    assert wide_centre["lat"] == pytest.approx(51.49)
+
+
+# ------------------------------------------------------ All London = London totals
+
+
+def test_all_london_figures_match_the_london_totals_in_the_committed_snapshot() -> None:
+    tables = committed_tables()
+    snapshot = app.load_snapshot(COMMITTED_DATA)
+    bounds = app.window_bounds(snapshot)
+    monthly, outcomes, ranking = (
+        tables["mart_borough_monthly"],
+        tables["mart_borough_outcomes"],
         tables["mart_lsoa_ranking"],
-        sorted(tables["mart_lsoa_ranking"]["local_authority"].unique()),
-    ).data
+    )
+    london = app.borough_headline(monthly, outcomes, bounds, app.ALL_LONDON)
+
+    assert (
+        london["crimes"] == ranking["crime_count"].sum()
+    )  # the ranking mart's London total
+    assert london["asb"] == ranking["asb_count"].sum()
+    assert app.borough_outcomes(outcomes, app.ALL_LONDON)["crime_count"].sum() == (
+        outcomes["crime_count"].sum()
+    )
+    boroughs = app.borough_options(monthly)[1:]
+    assert (
+        sum(
+            app.borough_headline(monthly, outcomes, bounds, b)["crimes"]
+            for b in boroughs
+        )
+        == london["crimes"]
+    )
+    assert sum(
+        len(t.lat) for t in app.hotspot_figure(ranking, app.ALL_LONDON).data
+    ) == (ranking["latitude"].notna().sum())
+
+
+# -------------------------------------------------------------- the page itself
+
+
+def run_page(borough: str | None = None) -> AppTest:
+    if not COMMITTED_DATA.is_dir():
+        pytest.skip("no committed snapshot")
+    page = AppTest.from_file(str(APP_PATH), default_timeout=120)
+    if borough is not None:
+        page.query_params["borough"] = borough
+    return page.run()
+
+
+def test_the_page_defaults_to_all_london() -> None:
+    page = run_page()
+
+    assert not page.exception
+    selector = page.sidebar.selectbox[0]
+    assert selector.label == "Borough" and selector.value == "All London"
+    assert len(selector.options) == 34
+    assert "borough" not in page.query_params
+    assert [m.label for m in page.metric] == [
+        "Crimes, last 12 months",
+        "Anti-social behaviour",
+        "Charged or at court",
+    ]
+    assert [h.value for h in page.header] == [
+        "All London",
+        "Records by month",
+        "Top crime types, last 12 months",
+        "Outcomes by crime type",
+        "Hotspots, last 12 months",
+        "Data quality",
+    ]
+
+
+@pytest.mark.parametrize("borough", ["Camden", "Westminster"])
+def test_a_borough_in_the_url_is_selected_and_shown(borough: str) -> None:
+    page = run_page(borough)
+
+    assert not page.exception
+    assert page.sidebar.selectbox[0].value == borough
+    assert page.header[0].value == borough
+    assert page.query_params["borough"] == borough
+    assert any("of London's recorded crime" in m.value for m in page.markdown)
+    captions = " ".join(c.value for c in page.caption)
+    assert "Counts, not rates" in captions and "no population denominator" in captions
+    assert "London LSOAs only" in captions
+
+
+def test_an_unknown_borough_in_the_url_falls_back_to_all_london() -> None:
+    page = run_page("Atlantis")
+
+    assert not page.exception
+    assert page.sidebar.selectbox[0].value == "All London"
+    assert page.header[0].value == "All London"
+    assert "borough" not in page.query_params
+
+
+def test_changing_the_selector_updates_the_url_and_the_page() -> None:
+    page = run_page()
+    page.sidebar.selectbox[0].select("Camden").run()
+
+    assert not page.exception
+    assert page.header[0].value == "Camden"
+    assert page.query_params["borough"] == "Camden"
+    page.sidebar.selectbox[0].select("All London").run()
+    assert page.header[0].value == "All London" and "borough" not in page.query_params
+
+
+def test_every_borough_view_carries_the_counts_not_rates_caption() -> None:
+    for borough in (None, "Hackney"):
+        captions = " ".join(c.value for c in run_page(borough).caption)
+        assert app.BOROUGH_CAPTION in captions
+
+
+def test_the_data_quality_panel_and_footer_are_unchanged() -> None:
+    page = run_page("Camden")
+    assert page.header[-1].value == "Data quality"
+    captions = " ".join(c.value for c in page.caption)
+    assert "excluding 2024-10 (outlier)" in captions
+    assert "not where residents are at higher risk" in captions
+    assert "Snapshot of archive" in captions
 
 
 # ----------------------------------------------------------- committed snapshot
@@ -164,25 +419,24 @@ def test_committed_snapshot_is_small_and_has_the_documented_columns() -> None:
         )
 
 
-def test_the_page_renders_from_the_committed_snapshot() -> None:
-    if not COMMITTED_DATA.is_dir():
-        pytest.skip("no committed snapshot")
-    page = AppTest.from_file(str(APP_PATH), default_timeout=120).run()
+@pytest.mark.slow
+def test_loaders_read_what_the_export_writes(spark, export_env: Path) -> None:
+    prepare_gold(spark, sample_rows())
+    export.run_export(spark)
 
-    assert not page.exception
-    assert [m.label for m in page.metric] == [
-        "Records, 36 months",
-        "Anti-social behaviour",
-        "Charged or at court",
-        "Quarantined rows",
-    ]
-    assert [h.value for h in page.header] == [
-        "Records by month",
-        "Outcomes by crime type",
-        "London hotspots, last 12 months",
-        "Data quality",
-    ]
-    captions = " ".join(c.value for c in page.caption)
-    assert "excluding 2024-10 (outlier)" in captions
-    assert "not where residents are at higher risk" in captions
-    assert "Snapshot of archive" in captions
+    tables = app.load_tables(export_env)
+    snapshot = app.load_snapshot(export_env)
+
+    for name, columns in export.EXPORT_COLUMNS.items():
+        assert list(tables[name].columns) == columns
+    assert snapshot["archive_month"] == "2026-08"
+    options = app.borough_options(tables["mart_borough_monthly"])
+    assert options == ["All London", "Camden", "Hounslow"]
+    headline = app.borough_headline(
+        tables["mart_borough_monthly"],
+        tables["mart_borough_outcomes"],
+        app.window_bounds(snapshot),
+        app.ALL_LONDON,
+    )
+    assert headline["crimes"] + headline["asb"] > 0
+    assert app.hotspot_figure(tables["mart_lsoa_ranking"], app.ALL_LONDON).data

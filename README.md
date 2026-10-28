@@ -28,7 +28,7 @@ flowchart LR
 | [Extract](src/uk_crime/extract.py) | Moves bytes only. Streams the zip, verifies it, renames it into place atomically, and lands the street CSVs under `archive=YYYY-MM/month=YYYY-MM/` with their original names. |
 | [Bronze](src/uk_crime/bronze.py) | Adds metadata (archive month, data month, force, source file, ingestion time) and nothing else. Every column stays a string, nothing is cleaned or dropped, and it is the replayable source of truth. |
 | [Silver](src/uk_crime/silver.py) | Typed, cleaned, deduplicated and quality-checked. Rows that fail go to a quarantine table with one reason each. Rebuilt in full from bronze on every run. |
-| [Gold](src/uk_crime/gold.py) | Reads only silver. Five dimensions, one fact table and three marts, written with Spark SQL over temp views. |
+| [Gold](src/uk_crime/gold.py) | Reads only silver. Five dimensions, one fact table and five marts (including two per-borough marts), written with Spark SQL over temp views. |
 
 ## Key engineering decisions
 
@@ -82,13 +82,15 @@ Outcome shares for three crime types. The period is 2023-09 to 2025-04, excludin
 
 ## Dashboard
 
-A small [Streamlit](dashboard/app.py) app reads a committed snapshot of the gold layer (`dashboard/data/`: four Parquet files and a `snapshot.json`, 167 KB in total), so it needs neither Spark nor a pipeline run. It shows:
+A small [Streamlit](dashboard/app.py) app reads a committed snapshot of the gold layer (`dashboard/data/`: six Parquet files and a `snapshot.json`, 223 KB in total), so it needs neither Spark nor a pipeline run. A sidebar selector picks "All London" or one of the 33 boroughs, and the choice is kept in the URL (`?borough=Camden`), so a view can be shared; an unknown name falls back to All London. For the selection it shows:
 
-- headline figures: records over 36 months, anti-social behaviour share, charged-or-at-court share for mature months, and quarantined rows
-- monthly records by crime type, with a force filter
+- headline figures: crimes in the last 12 months, anti-social behaviour share, and the charged-or-at-court share for mature months, plus a line giving the borough's share of London's recorded crime
+- monthly records by crime type, and the top crime types of the last 12 months
 - outcome groups by crime type, stating the period and the excluded outlier month
-- a map of London LSOAs for the last 12 months, with the counts-not-rates caveat in the caption
+- a map of the selection's LSOAs, zoomed to fit, and its ten LSOAs with the most crimes
 - the reconciliation table, and a footer with the snapshot's archive month, silver run id and links to this repository and [the data caveats](docs/data-caveats.md)
+
+Every borough view carries the caveat that these are counts, not rates (there is no population denominator yet) and cover London LSOAs only.
 
 _Screenshot to be added._
 
@@ -139,7 +141,7 @@ src/uk_crime/
   gold.py           dimensions, fact table, marts
   export.py         small Parquet snapshot of gold for the dashboard
 dashboard/          Streamlit app and its committed data snapshot
-tests/              160 tests with small in-memory fixtures
+tests/              188 tests with small in-memory fixtures
 analyses/           read-only profiling scripts behind the rules above
 docs/               duplicate Crime ID profile and data caveats
 Makefile            pipeline, test, lint and profile targets
@@ -149,7 +151,7 @@ CLAUDE.md           the engineering rules the project follows
 
 ## Testing and CI
 
-There are 160 tests, none of which touch the network or `data/`. They use small fixtures and cover:
+There are 188 tests, none of which touch the network or `data/`. They use small fixtures and cover:
 
 - landing: a tiny zip built in a temp folder, retry and no-retry cases, atomic landing and idempotency
 - bronze: metadata parsing, kept corrupt rows and header drift
@@ -157,7 +159,7 @@ There are 160 tests, none of which touch the network or `data/`. They use small 
 - export and dashboard: the exported files and columns, the stale-summary refusal, the loading functions, and the page itself rendered headlessly from the committed snapshot
 - gold: the dimensions and their UNKNOWN members, financial-year boundaries, key uniqueness, referential integrity, mart reconciliation, the silver consistency gate and re-run determinism
 
-`make test` runs the 136 fast tests in about 76 seconds. The 24 end-to-end tests that write real Delta tables are marked `slow`; `make test-all` runs all 160 in about 5 minutes (313 seconds). Both were measured on an 8 GB Apple-silicon Mac, and both use the optional dashboard dependency group. CI ([ci.yml](.github/workflows/ci.yml)) runs ruff, the format check and the fast tests on every push, adds the slow tests on pull requests to `main`, and caches the Delta jars. Dependabot proposes weekly updates for the actions and the Python dependencies.
+`make test` runs the 164 fast tests in about 103 seconds. The 24 end-to-end tests that write real Delta tables are marked `slow`; `make test-all` runs all 188 in about 6 minutes (374 seconds). Both were measured on an 8 GB Apple-silicon Mac, and both use the optional dashboard dependency group. CI ([ci.yml](.github/workflows/ci.yml)) runs ruff, the format check and the fast tests on every push, adds the slow tests on pull requests to `main`, and caches the Delta jars. Dependabot proposes weekly updates for the actions and the Python dependencies.
 
 ## Roadmap
 

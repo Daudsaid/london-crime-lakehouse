@@ -39,8 +39,9 @@ are kept as separate incidents.
 - **Drop from 2026-05 (observed, cause unverified).** Outside-London rows per month ran
   224 to 681 (mean 400.7) from 2023-09 to 2026-04, then were 26 (2026-05), 22 (2026-06),
   35 (2026-07) and 20 (2026-08).
+- The dashboard's borough views, including "All London", use London LSOAs only. The 12,924 outside-London rows and the 12,210 rows with no LSOA are in `fct_crimes` and `mart_monthly_crimes` but not in the borough marts; the gold reconciliation checks that the borough mart plus those two groups equals the fact table (3,390,939 + 12,924 + 12,210 = 3,416,073).
 - Gold keeps these rows in `dim_lsoa` and `fct_crimes` (`is_london = false`) and in
-  `mart_monthly_crimes`. `mart_lsoa_ranking` covers London LSOAs only.
+  `mart_monthly_crimes`. `mart_lsoa_ranking`, `mart_borough_monthly` and `mart_borough_outcomes` cover London LSOAs only.
 
 ## LSOA to local authority is a name match
 
