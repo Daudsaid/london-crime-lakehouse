@@ -648,6 +648,7 @@ def gold_table(spark: SparkSession, name: str) -> DataFrame:
     return spark.read.format("delta").load(str(gold.table_path(name)))
 
 
+@pytest.mark.slow
 def test_gold_refuses_to_run_when_silver_is_inconsistent(
     spark: SparkSession, lakehouse: None
 ) -> None:
@@ -657,6 +658,7 @@ def test_gold_refuses_to_run_when_silver_is_inconsistent(
     assert not config.GOLD_DIR.exists()
 
 
+@pytest.mark.slow
 def test_run_gold_writes_every_table_with_the_same_silver_run_id(
     spark: SparkSession, lakehouse: None
 ) -> None:
@@ -672,6 +674,7 @@ def test_run_gold_writes_every_table_with_the_same_silver_run_id(
         assert [r[0] for r in ids] == ["run-A"], name
 
 
+@pytest.mark.slow
 def test_gold_consistency_fails_when_one_table_has_another_run_id(
     spark: SparkSession, lakehouse: None
 ) -> None:
@@ -685,6 +688,7 @@ def test_gold_consistency_fails_when_one_table_has_another_run_id(
         gold.assert_gold_consistent(spark)
 
 
+@pytest.mark.slow
 def test_gold_consistency_fails_when_a_table_is_missing(
     spark: SparkSession, lakehouse: None
 ) -> None:
@@ -692,6 +696,7 @@ def test_gold_consistency_fails_when_a_table_is_missing(
         gold.assert_gold_consistent(spark)
 
 
+@pytest.mark.slow
 def test_rerun_gives_identical_output(spark: SparkSession, lakehouse: None) -> None:
     write_silver(spark, sample_rows())
     gold.run_gold(spark)
@@ -702,6 +707,7 @@ def test_rerun_gives_identical_output(spark: SparkSession, lakehouse: None) -> N
     assert all(f["rows"] > 0 for f in first.values())
 
 
+@pytest.mark.slow
 def test_schema_mismatch_without_the_flag_raises_and_writes_nothing(
     spark: SparkSession, lakehouse: None
 ) -> None:
@@ -724,6 +730,7 @@ def test_schema_mismatch_without_the_flag_raises_and_writes_nothing(
     assert gold.assert_gold_consistent(spark) == "silver-run-1"
 
 
+@pytest.mark.slow
 def test_gold_reads_only_silver(
     spark: SparkSession, lakehouse: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:

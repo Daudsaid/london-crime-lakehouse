@@ -20,3 +20,9 @@ build-backend = "uv_build"
 
 [tool.uv.build-backend]
 module-name = "uk_crime"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: end-to-end tests that run a whole layer and write real Delta tables (deselect with -m 'not slow')",
+]

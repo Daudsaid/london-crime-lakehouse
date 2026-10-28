@@ -370,6 +370,7 @@ def mixed_rows() -> list[dict[str, Any]]:
     ]  # fmt: skip
 
 
+@pytest.mark.slow
 def test_rerun_gives_identical_output(spark: SparkSession, tables: None) -> None:
     bronze(spark, mixed_rows()).write.format("delta").save(
         str(config.BRONZE_STREET_TABLE)
@@ -392,6 +393,7 @@ def test_rerun_gives_identical_output(spark: SparkSession, tables: None) -> None
     )
 
 
+@pytest.mark.slow
 def test_guardrail_stops_before_anything_is_written(
     spark: SparkSession, tables: None
 ) -> None:
@@ -413,6 +415,7 @@ def test_main_requires_all() -> None:
 # ------------------------------------------------------------------ _run_id / consistency
 
 
+@pytest.mark.slow
 def test_both_tables_carry_the_same_run_id(spark: SparkSession, tables: None) -> None:
     bronze(spark, mixed_rows()).write.format("delta").save(
         str(config.BRONZE_STREET_TABLE)
@@ -431,6 +434,7 @@ def test_both_tables_carry_the_same_run_id(spark: SparkSession, tables: None) ->
     assert silver.assert_silver_consistent(spark) == stats["run_id"]
 
 
+@pytest.mark.slow
 def test_each_run_gets_a_new_run_id(spark: SparkSession, tables: None) -> None:
     bronze(spark, mixed_rows()).write.format("delta").save(
         str(config.BRONZE_STREET_TABLE)
@@ -441,6 +445,7 @@ def test_each_run_gets_a_new_run_id(spark: SparkSession, tables: None) -> None:
     assert silver.assert_silver_consistent(spark) == second["run_id"]
 
 
+@pytest.mark.slow
 def test_consistency_fails_when_only_quarantine_was_rewritten(
     spark: SparkSession, tables: None
 ) -> None:
@@ -457,6 +462,7 @@ def test_consistency_fails_when_only_quarantine_was_rewritten(
         silver.assert_silver_consistent(spark)
 
 
+@pytest.mark.slow
 def test_consistency_fails_when_only_silver_was_rewritten(
     spark: SparkSession, tables: None
 ) -> None:
@@ -471,6 +477,7 @@ def test_consistency_fails_when_only_silver_was_rewritten(
         silver.assert_silver_consistent(spark)
 
 
+@pytest.mark.slow
 def test_consistency_works_when_quarantine_is_empty(
     spark: SparkSession, tables: None
 ) -> None:
@@ -483,6 +490,7 @@ def test_consistency_works_when_quarantine_is_empty(
     assert silver.assert_silver_consistent(spark) == stats["run_id"]
 
 
+@pytest.mark.slow
 def test_consistency_fails_when_a_table_holds_two_run_ids(
     spark: SparkSession, tables: None
 ) -> None:
@@ -497,6 +505,7 @@ def test_consistency_fails_when_a_table_holds_two_run_ids(
         silver.assert_silver_consistent(spark)
 
 
+@pytest.mark.slow
 def test_consistency_fails_when_a_table_is_missing(
     spark: SparkSession, tables: None
 ) -> None:
@@ -569,6 +578,7 @@ def old_style_tables(spark: SparkSession) -> None:
     )
 
 
+@pytest.mark.slow
 def test_schema_mismatch_without_the_flag_raises_and_writes_nothing(
     spark: SparkSession, tables: None
 ) -> None:
@@ -590,6 +600,7 @@ def test_schema_mismatch_without_the_flag_raises_and_writes_nothing(
     )
 
 
+@pytest.mark.slow
 def test_schema_mismatch_with_the_flag_rewrites_and_logs_the_diff(
     spark: SparkSession, tables: None, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -612,6 +623,7 @@ def test_schema_mismatch_with_the_flag_rewrites_and_logs_the_diff(
     assert silver.assert_silver_consistent(spark) == stats["run_id"]
 
 
+@pytest.mark.slow
 def test_matching_schema_needs_no_flag(spark: SparkSession, tables: None) -> None:
     bronze(spark, mixed_rows()).write.format("delta").save(
         str(config.BRONZE_STREET_TABLE)
