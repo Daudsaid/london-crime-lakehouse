@@ -17,6 +17,10 @@ TEST_SPARK_SETTINGS = {
     "spark.driver.memory": "2g",  # tiny data; leaves headroom on small machines and CI
     # Delta reads its transaction log with 50 tasks by default; tiny tables need 2.
     "spark.databricks.delta.snapshotPartitions": 2,
+    # Adaptive execution starts new thread pools for every query. Hundreds of small test
+    # queries pushed the JVM past macOS's 2048-threads-per-process limit ("unable to create
+    # native thread"), so tests run without it (about 500 threads at most).
+    "spark.sql.adaptive.enabled": False,
 }
 
 
