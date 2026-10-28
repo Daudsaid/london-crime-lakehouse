@@ -80,6 +80,27 @@ Outcome shares for three crime types. The period is 2023-09 to 2025-04, excludin
 | Violence and sexual offences | 398,522 | 85.1% | 6.6% | 5.1% | 1.1% | 2.0% |
 | Vehicle crime | 153,027 | 98.1% | 0.9% | 0.9% | 0.0% | 0.0% |
 
+## Dashboard
+
+A small [Streamlit](dashboard/app.py) app reads a committed snapshot of the gold layer (`dashboard/data/`: four Parquet files and a `snapshot.json`, 167 KB in total), so it needs neither Spark nor a pipeline run. It shows:
+
+- headline figures: records over 36 months, anti-social behaviour share, charged-or-at-court share for mature months, and quarantined rows
+- monthly records by crime type, with a force filter
+- outcome groups by crime type, stating the period and the excluded outlier month
+- a map of London LSOAs for the last 12 months, with the counts-not-rates caveat in the caption
+- the reconciliation table, and a footer with the snapshot's archive month, silver run id and links to this repository and [the data caveats](docs/data-caveats.md)
+
+_Screenshot to be added._
+
+```bash
+make dashboard   # first run installs the optional dashboard dependency group
+make export      # refresh the snapshot from gold, after make pipeline
+```
+
+The app imports no project code, and [`dashboard/requirements.txt`](dashboard/requirements.txt) pins only its own dependencies, so it can be deployed on its own (for example to Streamlit Community Cloud).
+
+[`export.py`](src/uk_crime/export.py) reads gold only, after checking that every gold table comes from one silver run, and refuses to export if silver's run summary belongs to a different run than the gold tables.
+
 ## Data caveats
 
 The full list, with numbers, is in [docs/data-caveats.md](docs/data-caveats.md). The ones that matter most:
@@ -116,7 +137,9 @@ src/uk_crime/
   bronze.py         landed CSVs to a Delta table, all strings plus metadata
   silver.py         typing, data-quality rules, R5 deduplication, quarantine
   gold.py           dimensions, fact table, marts
-tests/              137 tests with small in-memory fixtures
+  export.py         small Parquet snapshot of gold for the dashboard
+dashboard/          Streamlit app and its committed data snapshot
+tests/              160 tests with small in-memory fixtures
 analyses/           read-only profiling scripts behind the rules above
 docs/               duplicate Crime ID profile and data caveats
 Makefile            pipeline, test, lint and profile targets
@@ -126,14 +149,15 @@ CLAUDE.md           the engineering rules the project follows
 
 ## Testing and CI
 
-There are 137 tests, none of which touch the network or `data/`. They use small fixtures and cover:
+There are 160 tests, none of which touch the network or `data/`. They use small fixtures and cover:
 
 - landing: a tiny zip built in a temp folder, retry and no-retry cases, atomic landing and idempotency
 - bronze: metadata parsing, kept corrupt rows and header drift
 - silver: every deduplication case, the order of the data-quality rules, vocabulary errors, reconciliation, the quarantine guardrail, run-id consistency and the schema-change path
+- export and dashboard: the exported files and columns, the stale-summary refusal, the loading functions, and the page itself rendered headlessly from the committed snapshot
 - gold: the dimensions and their UNKNOWN members, financial-year boundaries, key uniqueness, referential integrity, mart reconciliation, the silver consistency gate and re-run determinism
 
-`make test` runs the 118 fast tests in about 65 seconds. The 19 end-to-end tests that write real Delta tables are marked `slow`; `make test-all` runs all 137 in about 3.5 minutes (215 seconds, measured on an 8 GB Apple-silicon Mac). CI ([ci.yml](.github/workflows/ci.yml)) runs ruff, the format check and the fast tests on every push, adds the slow tests on pull requests to `main`, and caches the Delta jars. Dependabot proposes weekly updates for the actions and the Python dependencies.
+`make test` runs the 136 fast tests in about 76 seconds. The 24 end-to-end tests that write real Delta tables are marked `slow`; `make test-all` runs all 160 in about 5 minutes (313 seconds). Both were measured on an 8 GB Apple-silicon Mac, and both use the optional dashboard dependency group. CI ([ci.yml](.github/workflows/ci.yml)) runs ruff, the format check and the fast tests on every push, adds the slow tests on pull requests to `main`, and caches the Delta jars. Dependabot proposes weekly updates for the actions and the Python dependencies.
 
 ## Roadmap
 

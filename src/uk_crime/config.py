@@ -21,6 +21,12 @@ GOLD_DIR: Path = LAKEHOUSE_DIR / "gold"
 BRONZE_STREET_TABLE: Path = BRONZE_DIR / "crimes_street"
 SILVER_STREET_TABLE: Path = SILVER_DIR / "crimes_street"
 SILVER_QUARANTINE_TABLE: Path = SILVER_DIR / "crimes_street_quarantine"
+SILVER_RUN_SUMMARY: Path = SILVER_DIR / "run_summary.json"
+
+# Small Parquet snapshot of gold that the Streamlit dashboard reads (committed to git).
+DASHBOARD_DATA_DIR: Path = Path(
+    os.environ.get("UK_CRIME_DASHBOARD_DATA_DIR", PROJECT_ROOT / "dashboard" / "data")
+)
 
 ARCHIVE_BASE_URL: str = "https://data.police.uk/data/archive"
 KEEP_ARCHIVES: bool = os.environ.get("UK_CRIME_KEEP_ARCHIVES", "true").lower() == "true"
