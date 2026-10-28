@@ -29,12 +29,25 @@ FORCES: tuple[str, ...] = tuple(
     for f in os.environ.get("UK_CRIME_FORCES", "metropolitan,city-of-london").split(",")
     if f.strip()
 )
-# Gold marts: the newest N months have immature outcomes and are left out of the outcome
-# mart; the LSOA ranking covers the newest M months. Both are relative to the latest month
-# in silver, not to today's date.
+# Gold marts. All windows are relative to the latest month in silver, not today's date.
+#
+# mart_outcome_rates leaves out the newest OUTCOME_MATURITY_MONTHS months, whose outcomes
+# have not matured, and the months in OUTCOME_EXCLUDED_MONTHS (known outliers, YYYY-MM).
+# Rule for the maturity window: exclude the smallest number of most-recent months so that
+# every remaining month newer than the baseline window has a placeholder-outcome share
+# within 2pp of the baseline (the median of months older than 18 months). Set from archive
+# 2026-08 (analyses/profile_outcome_maturity.py); re-check when a new archive lands.
+# 2024-10 is excluded from this mart only: its placeholder share is 25.6% against a 2.4%
+# baseline. Every other table keeps it.
 OUTCOME_MATURITY_MONTHS: int = int(
-    os.environ.get("UK_CRIME_OUTCOME_MATURITY_MONTHS", "6")
+    os.environ.get("UK_CRIME_OUTCOME_MATURITY_MONTHS", "16")
 )
+OUTCOME_EXCLUDED_MONTHS: tuple[str, ...] = tuple(
+    m.strip()
+    for m in os.environ.get("UK_CRIME_OUTCOME_EXCLUDED_MONTHS", "2024-10").split(",")
+    if m.strip()
+)
+# mart_lsoa_ranking covers the newest LSOA_RANKING_MONTHS months.
 LSOA_RANKING_MONTHS: int = int(os.environ.get("UK_CRIME_LSOA_RANKING_MONTHS", "12"))
 HTTP_TIMEOUT: tuple[float, float] = (10.0, 60.0)  # (connect, read) seconds
 HTTP_MAX_ATTEMPTS: int = 5

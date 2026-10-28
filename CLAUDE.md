@@ -29,13 +29,19 @@ src/uk_crime/
   (status from the silver lists, explicit outcome_group mapping), dim_lsoa (local_authority =
   lsoa_name without its trailing code); each has an UNKNOWN member so fact keys are never
   NULL. fct_crimes is one row per silver record. Marts: mart_monthly_crimes,
-  mart_outcome_rates (non-ASB, excludes the newest OUTCOME_MATURITY_MONTHS = 6 months) and
+  mart_outcome_rates (non-ASB; leaves out the newest OUTCOME_MATURITY_MONTHS = 16 months
+  and OUTCOME_EXCLUDED_MONTHS = 2024-10, and records the months used and excluded) and
   mart_lsoa_ranking (newest LSOA_RANKING_MONTHS = 12 months, London LSOAs only via
   dim_lsoa.is_london, crime_count excludes ASB with asb_count alongside, ranked within
   local_authority, counts not rates). is_london is a name match against LONDON_AUTHORITIES
-  (known limitation, see docs/data-caveats.md). All tables carry _silver_run_id; gold calls assert_silver_consistent() first
-  and assert_gold_consistent() checks that all nine tables share one _silver_run_id. An
-  unmapped force, crime type or outcome raises.
+  (known limitation, see docs/data-caveats.md). All tables carry _silver_run_id; gold
+  calls assert_silver_consistent() first and assert_gold_consistent() checks that all nine
+  tables share one _silver_run_id. An unmapped force, crime type or outcome raises.
+  Outcome maturity rule: exclude the smallest number of most-recent months so that every
+  remaining month newer than the baseline window has a placeholder share within 2pp of the
+  baseline (median of months older than 18 months). Set from archive 2026-08; re-check
+  when a new archive lands (analyses/profile_outcome_maturity.py, evidence in
+  docs/data-caveats.md). 2024-10 (25.6% placeholder share) is excluded from this mart only.
 Data lives in data/ (gitignored): landing/, lakehouse/{bronze,silver,gold}/.
 
 ### Layer contracts (strict)

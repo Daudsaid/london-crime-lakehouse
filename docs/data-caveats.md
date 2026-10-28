@@ -52,14 +52,58 @@ In the loaded data every LSOA code has exactly one name and every name exactly o
 
 ## Outcome maturity
 
-`mart_outcome_rates` leaves out ASB and the newest 6 months (`OUTCOME_MATURITY_MONTHS`).
-With a latest month of 2026-08 it uses 2023-09 to 2026-02 (2,264,176 non-ASB rows).
+`mart_outcome_rates` leaves out ASB, the newest 16 months (`OUTCOME_MATURITY_MONTHS`) and
+the months in `OUTCOME_EXCLUDED_MONTHS` (`2024-10`). With a latest month of 2026-08 it uses
+2023-09 to 2025-04 minus 2024-10: 19 months and 1,424,734 non-ASB rows (52.5% of the
+2,713,400 non-ASB rows). Every other gold table keeps 2024-10.
 
-What the data shows: the share of non-ASB rows whose outcome is a placeholder (NULL, "Under
-investigation" or "Status update unavailable") is 1.8% to 4.9% for each month from 2023-09
-to 2025-03 except 2024-10, which is 25.6%. After that it rises month by month: 6.0% in
-2025-09, 11.2% in 2026-01, 17.3% in 2026-04, 20.9% in 2026-06 and 43.3% in 2026-08. The
-2024-10 value is an outlier that I have not investigated.
+**The rule.** Exclude the smallest number of most-recent months so that every remaining
+month newer than the baseline window has a placeholder share within 2pp of the baseline
+(the median of months older than 18 months). Set from archive 2026-08; re-check when a new
+archive lands with `uv run python analyses/profile_outcome_maturity.py`.
+
+**The maturity curve** (non-ASB rows whose outcome is a placeholder: NULL, "Under
+investigation" or "Status update unavailable"):
+
+| Month | Age | Placeholder share | | Month | Age | Placeholder share |
+|---|---|---|---|---|---|---|
+| 2023-09 | 35 | 1.9% | | 2025-03 | 17 | 3.6% |
+| 2023-10 | 34 | 1.9% | | 2025-04 | 16 | 4.0% |
+| 2023-11 | 33 | 2.2% | | **2025-05** | 15 | **4.8%** (first month outside the band) |
+| 2023-12 | 32 | 2.9% | | 2025-06 | 14 | 5.6% |
+| 2024-01 | 31 | 4.9% | | 2025-07 | 13 | 5.7% |
+| 2024-02 | 30 | 1.8% | | 2025-08 | 12 | 5.9% |
+| 2024-03 | 29 | 2.3% | | 2025-09 | 11 | 6.0% |
+| 2024-04 | 28 | 2.5% | | 2025-10 | 10 | 6.7% |
+| 2024-05 | 27 | 3.1% | | 2025-11 | 9 | 7.3% |
+| 2024-06 | 26 | 2.3% | | 2025-12 | 8 | 8.3% |
+| 2024-07 | 25 | 2.3% | | 2026-01 | 7 | 11.2% |
+| 2024-08 | 24 | 2.1% | | 2026-02 | 6 | 13.7% |
+| 2024-09 | 23 | 2.4% | | 2026-03 | 5 | 15.9% |
+| **2024-10** | 22 | **25.6%** (excluded) | | 2026-04 | 4 | 17.3% |
+| 2024-11 | 21 | 2.5% | | 2026-05 | 3 | 19.1% |
+| 2024-12 | 20 | 2.6% | | 2026-06 | 2 | 20.9% |
+| 2025-01 | 19 | 2.9% | | 2026-07 | 1 | 27.9% |
+| 2025-02 | 18 | 3.2% | | 2026-08 | 0 | 43.3% |
+
+**Why 16.** The baseline (median of the 17 months 2023-09 to 2025-01) is 2.375%, so the
+band is up to 4.38%. Leaving out the newest 15 months keeps 2025-05 at 4.8% (2.46pp above
+the baseline); leaving out 16 months keeps 2025-04 at 4.0% (1.60pp) as the newest month, and
+every kept month newer than the baseline window is inside the band. One baseline-window
+month, 2024-01 (4.9%), is itself outside the band; it defines the baseline rather than
+being judged against it. The share keeps rising slowly through 2025 (3.2% in 2025-02 to 6.0%
+in 2025-09), so the line is partly a judgement; a looser tolerance gives a smaller cutoff
+(2.5pp: 15 months, 3pp: 15, 4pp: 11).
+
+**Why 2024-10 is excluded from outcome rates.** 20,778 of its 81,301 non-ASB rows (25.6%)
+have the placeholder outcome "Status update unavailable", against 1.8% to 4.9% for every
+other month of 2023-09 to 2025-03. It is excluded from `mart_outcome_rates` only; the cause
+has not been investigated.
+
+**Placeholder values switch in 2026-04 (cause unverified).** Up to 2026-03 every placeholder
+row is "Status update unavailable" (no "Under investigation" rows and no NULL outcomes). From
+2026-04 every placeholder row is "Under investigation" (no "Status update unavailable"). Both
+count as placeholders in silver and gold.
 
 ## Rankings are counts
 

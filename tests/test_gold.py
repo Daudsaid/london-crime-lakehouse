@@ -12,6 +12,17 @@ from pyspark.sql import functions as F
 from uk_crime import config, gold, silver
 
 _ids = count(1)
+DEFAULT_MATURITY_MONTHS = (
+    config.OUTCOME_MATURITY_MONTHS
+)  # read before any test patches it
+DEFAULT_EXCLUDED_MONTHS = config.OUTCOME_EXCLUDED_MONTHS
+
+
+@pytest.fixture(autouse=True)
+def small_outcome_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Most tests use a 6-month window and no excluded months; tests override as needed."""
+    monkeypatch.setattr(config, "OUTCOME_MATURITY_MONTHS", 6)
+    monkeypatch.setattr(config, "OUTCOME_EXCLUDED_MONTHS", ())
 
 
 def crime(**overrides: Any) -> dict[str, Any]:
@@ -290,6 +301,105 @@ def test_outcome_mart_excludes_asb_and_the_newest_six_months(
     assert {r["last_month"] for r in mart.collect()} == {date(2026, 2, 1)}
     assert abs(sum(r["share_of_crime_type"] for r in mart.collect()) - 1.0) < 1e-9
     assert mart.where("crime_type = 'Anti-social behaviour'").count() == 0
+
+
+def test_outcome_mart_excludes_listed_months(
+    spark: SparkSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(config, "OUTCOME_EXCLUDED_MONTHS", ("2025-06",))
+    rows = [
+        crime(month=date(2025, 5, 1), last_outcome_category="Local resolution"),
+        crime(
+            month=date(2025, 6, 1), last_outcome_category="Under investigation"
+        ),  # listed
+        crime(month=date(2025, 6, 1), last_outcome_category="Under investigation"),
+        crime(
+            month=date(2025, 7, 1), last_outcome_category="Unable to prosecute suspect"
+        ),
+        crime(month=date(2026, 8, 1)),  # latest month: immature
+    ]
+    built = gold.build_gold(silver_df(spark, rows))
+    mart = built["mart_outcome_rates"]
+
+    assert {r["outcome_group"]: r["crime_count"] for r in mart.collect()} == {
+        "out_of_court": 1,
+        "no_further_action": 1,
+    }
+    first = mart.first()
+    assert (first["first_month"], first["last_month"]) == (
+        date(2025, 5, 1),
+        date(2025, 7, 1),
+    )
+    assert (first["months_used"], first["excluded_months"]) == (2, "2025-06")
+    # every other table keeps the listed month
+    assert built["fct_crimes"].where("month_key = 202506").count() == 2
+    assert built["mart_monthly_crimes"].where("month_key = 202506").count() == 1
+
+
+def test_outcome_mart_records_no_exclusions_as_an_empty_string(
+    spark: SparkSession,
+) -> None:
+    rows = [crime(month=date(2025, 5, 1)), crime(month=date(2026, 8, 1))]
+    mart = gold.build_gold(silver_df(spark, rows))["mart_outcome_rates"]
+    assert (mart.first()["months_used"], mart.first()["excluded_months"]) == (1, "")
+
+
+def test_outcome_exclusion_must_look_like_a_month(spark: SparkSession) -> None:
+    built = gold.build_gold(silver_df(spark, [crime()]))
+    with pytest.raises(gold.GoldError, match="YYYY-MM"):
+        gold.build_mart_outcome_rates(
+            built["fct_crimes"],
+            built["dim_date"],
+            built["dim_crime_type"],
+            built["dim_outcome"],
+            6,
+            ["2025-6' OR 1=1"],
+        )
+
+
+def test_reconciliation_accounts_for_the_maturity_window_and_excluded_months(
+    spark: SparkSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(config, "OUTCOME_EXCLUDED_MONTHS", ("2025-06", "2026-07"))
+    rows = [
+        crime(month=date(2025, 5, 1)),  # mature, used
+        crime(month=date(2025, 5, 1)),
+        crime(month=date(2025, 6, 1)),  # mature but listed
+        crime(month=date(2026, 7, 1)),  # listed AND immature: counted as immature only
+        crime(month=date(2026, 8, 1)),  # immature
+        asb(month=date(2025, 5, 1)),  # ASB: not in the non-ASB split
+    ]
+    crimes = silver_df(spark, rows)
+    stats = gold.reconcile_gold(
+        gold.build_gold(crimes), crimes.count(), 6, 12, ("2025-06", "2026-07")
+    )
+    assert stats["non_asb_rows"] == 5
+    assert (
+        stats["mart_outcome_rates"],
+        stats["outcome_rows_immature"],
+        stats["outcome_rows_excluded_months"],
+    ) == (2, 2, 1)
+    assert (
+        stats["mart_outcome_rates"]
+        + stats["outcome_rows_immature"]
+        + stats["outcome_rows_excluded_months"]
+        == stats["non_asb_rows"]
+    )
+
+
+def test_reconcile_raises_when_the_mart_ignored_an_excluded_month(
+    spark: SparkSession,
+) -> None:
+    rows = [crime(month=date(2025, 5, 1)), crime(month=date(2025, 6, 1)), crime()]
+    crimes = silver_df(spark, rows)
+    built = gold.build_gold(crimes)  # built with NO exclusions
+    with pytest.raises(gold.GoldReconciliationError, match="mart_outcome_rates"):
+        gold.reconcile_gold(built, crimes.count(), 6, 12, ("2025-06",))
+
+
+def test_default_outcome_window_is_16_months_excluding_2024_10() -> None:
+    assert DEFAULT_MATURITY_MONTHS == 16
+    assert DEFAULT_EXCLUDED_MONTHS == ("2024-10",)
 
 
 def test_outcome_shares_are_within_each_crime_type(spark: SparkSession) -> None:

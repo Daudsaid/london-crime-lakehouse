@@ -116,6 +116,7 @@ MONTH_NAMES = [
     "November",
     "December",
 ]
+MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 LSOA_NAME_RE = re.compile(r"^(.+) \d{3}[A-Z]$")
 
 # The 32 London boroughs plus the City of London. dim_lsoa.is_london is a NAME match
@@ -191,7 +192,8 @@ SCHEMAS: dict[str, StructType] = {
         ("crime_type_key", StringType()), ("crime_type", StringType()),
         ("outcome_group", StringType()), ("crime_count", LongType()),
         ("share_of_crime_type", DoubleType()), ("first_month", DateType()),
-        ("last_month", DateType()), _LINEAGE,
+        ("last_month", DateType()), ("months_used", IntegerType()),
+        ("excluded_months", StringType()), _LINEAGE,
     ),
     "mart_lsoa_ranking": _schema(
         ("lsoa_code", StringType()), ("lsoa_name", StringType()),
@@ -428,12 +430,22 @@ def build_mart_outcome_rates(
     dim_crime_type: DataFrame,
     dim_outcome: DataFrame,
     maturity_months: int,
+    excluded_months: Sequence[str] = (),
 ) -> DataFrame:
     """Outcome-group counts and shares per crime type.
 
-    Excludes ASB (no outcomes) and the newest `maturity_months` months, whose outcomes
-    are not mature yet. first_month/last_month record the months actually used.
+    Excludes ASB (no outcomes), the newest `maturity_months` months (outcomes not mature
+    yet) and the `excluded_months` (YYYY-MM outliers). first_month/last_month/months_used
+    record the months actually used and excluded_months the listed exclusions.
     """
+    bad = [m for m in excluded_months if not MONTH_RE.match(m)]
+    if bad:
+        raise GoldError(f"excluded months must look like YYYY-MM: {bad}")
+    excluded = sorted(set(excluded_months))
+    exclusion_sql = ""
+    if excluded:
+        listed = ", ".join(f"'{m}'" for m in excluded)
+        exclusion_sql = f"AND date_format(f.month, 'yyyy-MM') NOT IN ({listed})"
     spark = _register(
         fct_crimes=fct, dim_date=dim_date, dim_crime_type=dim_crime_type,
         dim_outcome=dim_outcome,
@@ -447,6 +459,7 @@ def build_mart_outcome_rates(
         mature AS (
             SELECT f.* FROM f CROSS JOIN latest
             WHERE NOT f.is_asb AND f.month <= add_months(latest.latest, -{int(maturity_months)})
+              {exclusion_sql}
         ),
         counted AS (
             SELECT m.crime_type_key, o.outcome_group, count(*) AS crime_count,
@@ -458,7 +471,9 @@ def build_mart_outcome_rates(
                c.crime_count / sum(c.crime_count) OVER (PARTITION BY c.crime_type_key)
                    AS share_of_crime_type,
                min(c.first_month) OVER () AS first_month,
-               max(c.last_month) OVER () AS last_month
+               max(c.last_month) OVER () AS last_month,
+               CAST((SELECT count(DISTINCT month) FROM mature) AS INT) AS months_used,
+               '{",".join(excluded)}' AS excluded_months
         FROM counted c JOIN dim_crime_type ct ON ct.crime_type_key = c.crime_type_key
     """)
 
@@ -522,7 +537,12 @@ def build_gold(crimes: DataFrame) -> dict[str, DataFrame]:
             fct, dim_date, dim_force, dim_crime_type
         ),
         "mart_outcome_rates": build_mart_outcome_rates(
-            fct, dim_date, dim_crime_type, dim_outcome, config.OUTCOME_MATURITY_MONTHS
+            fct,
+            dim_date,
+            dim_crime_type,
+            dim_outcome,
+            config.OUTCOME_MATURITY_MONTHS,
+            config.OUTCOME_EXCLUDED_MONTHS,
         ),
         "mart_lsoa_ranking": build_mart_lsoa_ranking(
             fct, dim_date, dim_lsoa, config.LSOA_RANKING_MONTHS
@@ -572,6 +592,7 @@ def reconcile_gold(
     silver_rows: int,
     outcome_months: int,
     ranking_months: int,
+    excluded_months: Sequence[str] = (),
 ) -> dict[str, int]:
     """Check keys, referential integrity and that facts and marts reconcile.
 
@@ -606,16 +627,38 @@ def reconcile_gold(
     stats["mart_monthly_crimes"] = monthly
 
     if latest is not None:
-        mature = dated.where(
-            (~F.col("is_asb"))
-            & (F.col("month") <= F.add_months(F.lit(latest), -outcome_months))
-        ).count()
-        rates = tables["mart_outcome_rates"].agg(F.sum("crime_count")).first()[0] or 0
+        non_asb = dated.where(~F.col("is_asb"))
+        cutoff = F.add_months(F.lit(latest), -outcome_months)
+        listed = F.date_format("month", "yyyy-MM").isin(*excluded_months)
+        in_window = F.col("month") <= cutoff
+        mature = non_asb.where(in_window & ~listed).count()
+        immature = non_asb.where(~in_window).count()
+        excluded_rows = non_asb.where(in_window & listed).count()
+        if mature + immature + excluded_rows != non_asb.count():
+            raise GoldReconciliationError(
+                "non-ASB rows do not split into mature/immature/excluded"
+            )
+        mart = tables["mart_outcome_rates"]
+        rates = mart.agg(F.sum("crime_count")).first()[0] or 0
         if rates != mature:
             raise GoldReconciliationError(
-                f"mart_outcome_rates {rates} != fct (mature, non-ASB) {mature}"
+                f"mart_outcome_rates {rates} != fct (mature, non-ASB, not excluded) {mature}"
             )
-        stats["mart_outcome_rates"] = rates
+        used = non_asb.where(in_window & ~listed).select("month").distinct().count()
+        meta = mart.select("months_used", "excluded_months").distinct().collect()
+        if meta and [tuple(r) for r in meta] != [
+            (used, ",".join(sorted(set(excluded_months))))
+        ]:
+            raise GoldReconciliationError(
+                f"mart_outcome_rates months metadata {meta} != {used}"
+            )
+        stats.update(
+            non_asb_rows=non_asb.count(),
+            mart_outcome_rates=rates,
+            outcome_rows_immature=immature,
+            outcome_rows_excluded_months=excluded_rows,
+            outcome_months_used=used,
+        )
 
         recent = dated.where(
             F.col("month") > F.add_months(F.lit(latest), -ranking_months)
@@ -722,8 +765,21 @@ def run_gold(
     silver_rows = crimes.count()
     tables = build_gold(crimes)
     stats = reconcile_gold(
-        tables, silver_rows, config.OUTCOME_MATURITY_MONTHS, config.LSOA_RANKING_MONTHS
+        tables,
+        silver_rows,
+        config.OUTCOME_MATURITY_MONTHS,
+        config.LSOA_RANKING_MONTHS,
+        config.OUTCOME_EXCLUDED_MONTHS,
     )
+    outcome_mart = tables["mart_outcome_rates"].first()
+    if outcome_mart is not None:
+        logger.info(
+            "mart_outcome_rates: months %s to %s (%d used), excluded months: %s, "
+            "newest %d months left out as immature",
+            outcome_mart["first_month"], outcome_mart["last_month"],
+            outcome_mart["months_used"], outcome_mart["excluded_months"] or "none",
+            config.OUTCOME_MATURITY_MONTHS,
+        )  # fmt: skip
     tables = with_lineage(tables, silver_run_id)
     for name, df in tables.items():
         silver.check_output_schema(df, SCHEMAS[name], name)
