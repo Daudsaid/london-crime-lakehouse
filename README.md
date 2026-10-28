@@ -72,7 +72,7 @@ Top five London LSOAs by recorded crime, 2025-09 to 2026-08 (anti-social behavio
 | City of London 001F | City of London | 6,309 | 95 |
 | Hillingdon 031A | Hillingdon | 4,890 | 1,107 |
 
-Outcome shares for three crime types. The period is 2023-09 to 2025-04, excluding 2024-10: later months are left out because their outcomes are not mature yet, and the exclusion is an outlier month (see [outcome maturity](docs/data-caveats.md#outcome-maturity)).
+Outcome shares for three crime types. The period is 2023-09 to 2025-04, excluding 2024-10: later months are left out because their outcomes are not mature yet, and 2024-10 is excluded as an outlier (see [outcome maturity](docs/data-caveats.md#outcome-maturity)).
 
 | Crime type | Rows | No further action | Charged or court | Pending | Out of court | Other organisation |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -139,7 +139,7 @@ There are 137 tests, none of which touch the network or `data/`. They use small 
 
 - Move to Databricks: Auto Loader for landing to bronze, Lakeflow Declarative Pipelines for silver and gold (the transformations are already plain DataFrame functions and the quarantine maps to expectations), Unity Catalog volumes and tables, Lakeflow Jobs for orchestration, and Declarative Automation Bundles (formerly Databricks Asset Bundles) for deployment.
 - Add ONS population data so rankings can be rates per resident.
-- Byte-range partial downloads, so an interrupted archive download can resume.
+- Fetch only the configured forces' files from the archive with HTTP range requests, instead of downloading the full 1.7 GB zip.
 - Keep outcome history as a slowly changing dimension (SCD Type 2) instead of only the latest outcome.
 
 ## Author
