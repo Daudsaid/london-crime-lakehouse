@@ -13,6 +13,13 @@ over clever.
 - macOS, Java 17, uv, Python 3.12 (pinned in .python-version). Run everything with `uv run`.
 - Never use pip, never change the Python version, never add a dependency without asking.
 - Commands: `uv run pytest` · `uv run ruff check .` · `uv run ruff format .` · `make <target>`
+- `make help` lists the targets (extract, bronze, silver, gold, pipeline, test, test-all,
+  lint, format, profile). `make test` is the fast set (`pytest -m "not slow"`); end-to-end
+  tests that write real Delta tables are marked `@pytest.mark.slow`; `make test-all` and
+  plain `uv run pytest` run everything. The test session uses a small Spark config
+  (tests/conftest.py via `get_spark(overrides)`); production defaults are unchanged.
+- CI (.github/workflows/ci.yml): every push runs ruff and the fast tests; pull requests to
+  main also run the slow tests. Tests must never need data/ or the network.
 
 ## 3. Architecture (ELT, medallion)
 src/uk_crime/

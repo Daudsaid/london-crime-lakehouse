@@ -1,0 +1,58 @@
+name: CI
+
+# Every push runs lint and the fast tests; pull requests to main also run the slow
+# end-to-end tests, so a PR gets the full suite. Nothing here needs data/ or the network
+# beyond package and jar downloads.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      # Spark downloads the Delta jars into ~/.ivy2* (the directory name follows the Spark
+      # version). Cache it so they are not fetched on every run.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.ivy2*
+          key: ivy-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+          restore-keys: ivy-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: ruff check
+        run: uv run ruff check .
+
+      - name: ruff format --check
+        run: uv run ruff format --check .
+
+      - name: Fast tests
+        run: uv run pytest -m "not slow"
+
+      # Together with the fast tests above this is the full suite.
+      - name: Slow tests (pull requests only)
+        if: github.event_name == 'pull_request'
+        run: uv run pytest -m slow
