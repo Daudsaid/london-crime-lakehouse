@@ -1,6 +1,8 @@
-# UK Crime Lakehouse
+# London Crime Lakehouse
 
-A local PySpark and Delta Lake ELT pipeline over UK police street-crime data, with a star schema and marts on top.
+Metropolitan and City of London Police street-level data from police.uk. Extract, bronze and silver work for any force in the police.uk archive (which excludes Greater Manchester); gold's force names and the borough views are London-specific.
+
+A local PySpark and Delta Lake ELT pipeline over that street-crime data, with a star schema and marts on top.
 
 PySpark 4 · Delta Lake · Python 3.12 · uv · pytest · GitHub Actions
 
