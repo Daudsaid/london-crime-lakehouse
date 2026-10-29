@@ -62,9 +62,14 @@ src/uk_crime/
   sidebar borough selector (All London + the 33 boroughs) is synced to ?borough=<name>; an
   unknown name falls back to All London.
   Its dependencies are in the separate `dashboard` uv group (streamlit, plotly); the
-  pipeline's own dependencies are unchanged (pandas is pinned <3 there). app.py must not import
+  pipeline's own dependencies are unchanged. app.py must not import
   uk_crime or pyspark; dashboard/requirements.txt (generated with `uv export`, see its header)
   lets it be deployed on its own. `make export` refreshes the snapshot, `make dashboard` runs it.
+pandas pin: the `dashboard` group pins `pandas<3` in pyproject.toml because PySpark 4.2 does not
+yet fully support pandas 3 (it warns on import of its testing utilities). pytest turns that
+FutureWarning (that message only) into an error, so a pandas 3 install fails the tests and CI.
+Dependabot's uv entry uses `versioning-strategy: lockfile-only`, so it only updates uv.lock and
+never edits constraints such as this pin; lifting the pin is a manual decision.
 Data lives in data/ (gitignored): landing/, lakehouse/{bronze,silver,gold}/.
 
 ### Layer contracts (strict)
