@@ -15,7 +15,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
-REPO_URL = "https://github.com/Daudsaid/uk-crime-pipeline"
+REPO_URL = "https://github.com/Daudsaid/london-crime-lakehouse"
 CAVEATS_URL = f"{REPO_URL}/blob/main/docs/data-caveats.md"
 ASB = "Anti-social behaviour"
 ALL_LONDON = "All London"
