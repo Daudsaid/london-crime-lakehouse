@@ -98,6 +98,14 @@ Every borough view carries the caveat that these are counts, not rates (there is
 
 ![London Crime Lakehouse dashboard](docs/images/dashboard.png)
 
+<table>
+  <tr>
+    <td width="33%"><a href="docs/images/dashboard-outcomes.png"><img src="docs/images/dashboard-outcomes.png" alt="Top crime types and outcomes by crime type"></a><br><sub>Top crime types and outcome groups by crime type.</sub></td>
+    <td width="33%"><a href="docs/images/dashboard-hotspots.png"><img src="docs/images/dashboard-hotspots.png" alt="LSOA hotspot map and top-ten table"></a><br><sub>LSOA hotspot map and the ten LSOAs with the most crimes.</sub></td>
+    <td width="33%"><a href="docs/images/dashboard-data-quality.png"><img src="docs/images/dashboard-data-quality.png" alt="Data quality reconciliation table"></a><br><sub>Data quality: the bronze-to-silver reconciliation.</sub></td>
+  </tr>
+</table>
+
 ```bash
 make dashboard   # first run installs the optional dashboard dependency group
 make export      # refresh the snapshot from gold, after make pipeline
