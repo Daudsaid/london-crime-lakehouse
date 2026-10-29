@@ -274,24 +274,119 @@ def test_london_comparison_line(fake: dict) -> None:
     monthly = fake["mart_borough_monthly"]
     assert "41.2%" in app.london_comparison(monthly, BOUNDS, "Camden")
     assert "70 of 170" in app.london_comparison(monthly, BOUNDS, "Camden")
-    assert app.london_comparison(monthly, BOUNDS, app.ALL_LONDON).startswith(
-        "All of London: 170"
+
+
+def test_the_london_comparison_is_hidden_for_all_london(fake: dict) -> None:
+    assert (
+        app.london_comparison(fake["mart_borough_monthly"], BOUNDS, app.ALL_LONDON)
+        is None
     )
+
+
+def trend(monthly: pd.DataFrame, borough: str, include_asb: bool = True, types=None):
+    """trend_figure with every crime type of the selection chosen, unless told otherwise."""
+    colours = app.crime_type_colours(monthly)
+    if types is None:
+        types = app.top_types(monthly, BOUNDS, borough, include_asb)
+    return app.trend_figure(monthly, borough, include_asb, types, colours)
+
+
+def line(figure, name: str):
+    (trace,) = [t for t in figure.data if t.name == name]
+    return trace
 
 
 def test_trend_figure_filters_by_borough_and_asb(fake: dict) -> None:
     monthly = fake["mart_borough_monthly"]
+    total = lambda figure: int(sum(line(figure, app.TOTAL_LABEL).y))
 
-    def total(figure) -> int:
-        return int(sum(sum(t.y) for t in figure.data))
+    assert total(trend(monthly, "Camden", True)) == 100
+    assert total(trend(monthly, "Camden", False)) == 70
+    assert total(trend(monthly, "Westminster", True)) == 120
+    assert total(trend(monthly, app.ALL_LONDON, True)) == 220
+    names = {t.name for t in trend(monthly, "Camden", False).data}
+    assert names == {app.TOTAL_LABEL, "Burglary"}
 
-    assert total(app.trend_figure(monthly, "Camden", True)) == 100
-    assert total(app.trend_figure(monthly, "Camden", False)) == 70
-    assert total(app.trend_figure(monthly, "Westminster", True)) == 120
-    assert total(app.trend_figure(monthly, app.ALL_LONDON, True)) == 220
-    assert {t.name for t in app.trend_figure(monthly, "Camden", False).data} == {
-        "Burglary"
-    }
+
+def test_the_total_line_is_always_there_and_covers_unselected_types(fake: dict) -> None:
+    monthly = fake["mart_borough_monthly"]
+    only_burglary = trend(monthly, "Camden", True, types=["Burglary"])
+    assert [t.name for t in only_burglary.data] == [app.TOTAL_LABEL, "Burglary"]
+    assert list(line(only_burglary, app.TOTAL_LABEL).y) == [90, 10]  # includes ASB
+    no_types = trend(monthly, "Camden", True, types=[])
+    assert [t.name for t in no_types.data] == [app.TOTAL_LABEL]
+
+
+def test_the_default_selection_is_the_four_biggest_types_of_the_selection() -> None:
+    types = ["A", "B", "C", "D", "E", "F"]
+    sizes = [50, 10, 40, 30, 20, 5]  # last 12 months; A is the biggest
+    monthly = pd.DataFrame(
+        {
+            "local_authority": "Camden",
+            "month": [JULY] * 6,
+            "crime_type": types,
+            "is_asb": [False] * 5 + [True],
+            "crime_count": sizes,
+        }
+    )
+    assert app.TOP_TYPES == 4
+    ranked = app.top_types(monthly, BOUNDS, "Camden", include_asb=True)
+    assert ranked == ["A", "C", "D", "E", "B", "F"]
+    assert ranked[: app.TOP_TYPES] == ["A", "C", "D", "E"]
+    # Unticking ASB removes it from the choices.
+    assert "F" not in app.top_types(monthly, BOUNDS, "Camden", include_asb=False)
+    # Another borough has its own ranking; types outside the window do not count.
+    hackney = pd.DataFrame(
+        {
+            "local_authority": ["Hackney", "Hackney"],
+            "month": [JULY, pd.Timestamp("2025-01-01")],
+            "crime_type": ["Drugs", "A"],  # A is only recorded before the window
+            "is_asb": [False, False],
+            "crime_count": [3, 99],
+        }
+    )
+    both = pd.concat([monthly, hackney], ignore_index=True)
+    assert app.top_types(both, BOUNDS, "Hackney", True) == ["Drugs"]
+
+
+def test_the_default_selection_follows_the_borough(fake: dict) -> None:
+    monthly = fake["mart_borough_monthly"]
+    assert app.top_types(monthly, BOUNDS, "Camden", True) == ["Burglary", app.ASB]
+    assert app.top_types(monthly, BOUNDS, app.ALL_LONDON, True) == ["Burglary", app.ASB]
+    assert app.top_types(monthly, BOUNDS, "Camden", False) == ["Burglary"]
+
+
+# ------------------------------------------------------------------- palette
+
+
+def test_the_palette_has_no_repeated_colours_and_covers_every_crime_type() -> None:
+    lowered = [c.lower() for c in app.PALETTE]
+    assert len(lowered) == len(set(lowered))
+    assert app.TOTAL_COLOUR.lower() not in lowered
+    assert len(app.PALETTE) >= 14  # the 14 crime types, ASB included
+
+
+def test_each_crime_type_has_its_own_colour_whatever_the_selection(fake: dict) -> None:
+    monthly = fake["mart_borough_monthly"]
+    colours = app.crime_type_colours(monthly)
+    assert len(set(colours.values())) == len(colours) == 2
+    # Colours depend on the whole table, not on the borough or the chosen types.
+    assert (
+        app.crime_type_colours(monthly[monthly["local_authority"] == "Camden"])
+        == colours
+    )
+    figure = trend(monthly, "Westminster")
+    assert line(figure, "Burglary").line.color == colours["Burglary"]
+    bars = app.top_crime_types_figure(monthly, BOUNDS, "Camden", colours)
+    assert bars.data[0].marker.color == colours["Burglary"]
+
+
+def test_more_crime_types_than_colours_raises() -> None:
+    monthly = pd.DataFrame(
+        {"crime_type": [f"t{i}" for i in range(len(app.PALETTE) + 1)]}
+    )
+    with pytest.raises(ValueError, match="colours"):
+        app.crime_type_colours(monthly)
 
 
 def long_monthly(first: str, last: str) -> pd.DataFrame:
@@ -319,14 +414,14 @@ def met_change_lines(figure) -> list:
 def test_trend_marks_the_met_recording_change_when_the_month_is_on_the_chart() -> None:
     monthly = long_monthly("2026-01-01", "2026-08-01")
     for borough in ("Camden", app.ALL_LONDON):
-        figure = app.trend_figure(monthly, borough, True)
+        figure = trend(monthly, borough)
         assert len(met_change_lines(figure)) == 1
         assert [a.text for a in figure.layout.annotations] == ["Met recording change"]
         assert figure.layout.annotations[0].x == pd.Timestamp("2026-05-01")
 
 
 def test_trend_has_no_line_when_the_month_is_outside_the_data(fake: dict) -> None:
-    figure = app.trend_figure(fake["mart_borough_monthly"], "Camden", True)  # Jul-Aug
+    figure = trend(fake["mart_borough_monthly"], "Camden")  # Jul-Aug
     assert not figure.layout.shapes and not figure.layout.annotations
 
 
@@ -334,7 +429,7 @@ def test_trend_has_no_met_line_for_the_city_of_london() -> None:
     monthly = long_monthly("2026-01-01", "2026-08-01").assign(
         local_authority="City of London"
     )
-    figure = app.trend_figure(monthly, "City of London", True)
+    figure = trend(monthly, "City of London")
     assert not figure.layout.shapes and not figure.layout.annotations
 
 
@@ -353,9 +448,10 @@ def test_anomalies_table_is_formatted_newest_first(fake: dict) -> None:
 
 def test_top_crime_types_figure_filters_by_borough_and_drops_asb(fake: dict) -> None:
     monthly = fake["mart_borough_monthly"]
-    camden = app.top_crime_types_figure(monthly, BOUNDS, "Camden")
+    colours = app.crime_type_colours(monthly)
+    camden = app.top_crime_types_figure(monthly, BOUNDS, "Camden", colours)
     assert list(camden.data[0].y) == ["Burglary"] and list(camden.data[0].x) == [70]
-    london = app.top_crime_types_figure(monthly, BOUNDS, app.ALL_LONDON)
+    london = app.top_crime_types_figure(monthly, BOUNDS, app.ALL_LONDON, colours)
     assert list(london.data[0].x) == [170]
 
 
@@ -380,6 +476,41 @@ def test_outcome_figure_has_one_trace_per_outcome_group(fake: dict) -> None:
         app.borough_outcomes(fake["mart_borough_outcomes"], "Camden")
     )
     assert {t.name for t in figure.data} == {"Charged or at court", "No further action"}
+
+
+def outcomes_for_sorting() -> pd.DataFrame:
+    """Three crime types with charged shares 10%, 40% and none (no charged row at all)."""
+    rows = [
+        ("Robbery", "charged_or_court", 10, 0.10),
+        ("Robbery", "no_further_action", 90, 0.90),
+        ("Drugs", "charged_or_court", 40, 0.40),
+        ("Drugs", "no_further_action", 60, 0.60),
+        ("Bicycle theft", "no_further_action", 100, 1.00),
+    ]
+    return pd.DataFrame(
+        rows,
+        columns=["crime_type", "outcome_group", "crime_count", "share_of_crime_type"],
+    )
+
+
+def test_outcome_types_are_sorted_by_charged_share_highest_first() -> None:
+    outcomes = outcomes_for_sorting()
+    assert app.outcome_order(outcomes) == ["Drugs", "Robbery", "Bicycle theft"]
+
+    figure = app.outcome_figure(outcomes)
+    # A horizontal plotly axis lists categories from the bottom up, so the last one is on top.
+    bottom_to_top = list(figure.layout.yaxis.categoryarray)
+    assert bottom_to_top == ["Bicycle theft", "Robbery", "Drugs"]
+    assert figure.layout.yaxis.autorange is None  # not reversed: Drugs really is on top
+
+
+def test_outcome_order_breaks_ties_by_name() -> None:
+    rows = [("B", "charged_or_court", 1, 0.2), ("A", "charged_or_court", 1, 0.2)]
+    frame = pd.DataFrame(
+        rows,
+        columns=["crime_type", "outcome_group", "crime_count", "share_of_crime_type"],
+    )
+    assert app.outcome_order(frame) == ["A", "B"]
 
 
 def test_hotspot_figure_filters_by_borough_and_drops_missing_coordinates(
@@ -412,6 +543,97 @@ def test_map_zooms_further_in_for_a_smaller_area(fake: dict) -> None:
     assert narrow_centre == {"lat": pytest.approx(51.54), "lon": pytest.approx(-0.14)}
     assert app.map_view(london_points.iloc[0:0])[1] == 9.0  # no points: default view
     assert wide_centre["lat"] == pytest.approx(51.49)
+
+
+def test_all_london_map_fits_greater_london_and_a_borough_zooms_to_fit(
+    fake: dict,
+) -> None:
+    centre, zoom = app.london_view()
+    box = app.GREATER_LONDON
+    assert centre["lat"] == pytest.approx(sum(box["lat"]) / 2)
+    assert centre["lon"] == pytest.approx(sum(box["lon"]) / 2)
+    assert 9.0 < zoom < 10.0  # Greater London tall enough to fill a 560 px frame
+    # No more padding than before: zoomed in at least as far as fitting the same box loosely.
+    assert zoom > app.fit_view(box["lat"], box["lon"])[1]
+
+    ranking = fake["mart_lsoa_ranking"]
+    all_london = app.hotspot_figure(ranking, app.ALL_LONDON).layout.map
+    camden = app.hotspot_figure(ranking, "Camden").layout.map
+    assert all_london.zoom == pytest.approx(zoom)
+    assert camden.zoom > all_london.zoom  # a borough fits its own LSOAs
+
+
+# ------------------------------------------------------------------ formatting
+
+
+def test_integers_get_thousands_separators() -> None:
+    assert [app.fmt_int(v) for v in (0, 7, 999, 1000, 886712, 3416073)] == [
+        "0", "7", "999", "1,000", "886,712", "3,416,073",
+    ]  # fmt: skip
+
+
+def test_percentages_have_one_decimal_place() -> None:
+    assert app.fmt_pct(0.2090) == "20.9%"
+    assert app.fmt_pct(0.04915) == "4.9%"
+    assert app.fmt_pct(0.5) == "50.0%"
+    assert app.fmt_pct(1.0) == "100.0%"
+    assert app.fmt_pct(0.0) == "0.0%"
+    assert app.fmt_pct(0.0004) == "<0.1%"  # a real but tiny share is not shown as zero
+    assert app.fmt_pct(float("nan")) == ""
+    assert app.fmt_change(-94.886627) == "-94.9%"
+    assert app.fmt_change(100.0) == "+100.0%"
+    assert app.fmt_change(1234.56) == "+1,234.6%"
+
+
+def test_styled_tables_show_separators_but_keep_the_numbers() -> None:
+    frame = pd.DataFrame({"Crimes": [10107, 950], "Share": [0.0004, 0.5]})
+    styled = app.styled(frame, {"Crimes": app.fmt_int, "Share": app.fmt_pct})
+    html = styled.to_html()
+    assert "10,107" in html and "<0.1%" in html and "50.0%" in html
+    assert frame["Crimes"].tolist() == [10107, 950]  # the data itself is untouched
+
+
+# ------------------------------------------------------------ data-quality labels
+
+
+def reconciliation_frame() -> pd.DataFrame:
+    rows = [
+        ("reconciliation", "bronze_rows", 3440762, 1.0),
+        ("reconciliation", "archive_replaced", 0, 0.0),
+        ("quarantine", "conflicting_duplicate_crime_id", 1279, 0.0004),
+        ("silver_flags", "no_location_rows", 12209, 0.0036),
+        ("gold", "orphan_fact_keys", 0, None),
+        ("volume_anomalies", "flagged", 2, None),
+        ("new_group", "brand_new_item", 5, None),
+    ]
+    return pd.DataFrame(rows, columns=["group", "item", "rows", "share"])
+
+
+def test_data_quality_uses_plain_english_headings_and_labels() -> None:
+    tables = dict(app.quality_tables(reconciliation_frame()))
+
+    assert list(tables) == [
+        "Where every bronze row went", "Quarantined rows, by reason",
+        "Flags on kept rows", "Gold layer checks", "Volume check", "New group",
+    ]  # fmt: skip
+    assert tables["Where every bronze row went"]["Item"].tolist() == [
+        "Bronze rows",
+        "Replaced by a newer archive",
+    ]
+    assert tables["Quarantined rows, by reason"]["Item"].tolist() == [
+        "Conflicting duplicate Crime IDs"
+    ]
+    assert tables["Flags on kept rows"]["Item"].tolist() == ["Rows without location"]
+    assert tables["New group"]["Item"].tolist() == ["Brand new item"]  # fallback
+    for heading, table in tables.items():
+        assert "_" not in heading
+        assert not table["Item"].str.contains("_").any()
+
+
+def test_every_item_the_export_writes_has_a_plain_label() -> None:
+    committed = committed_tables()["reconciliation"]
+    assert set(committed["group"]) <= set(app.QUALITY_GROUPS)
+    assert set(committed["item"]) <= set(app.QUALITY_ITEMS)
 
 
 # ------------------------------------------------------ All London = London totals

@@ -51,6 +51,38 @@ BOROUGH_CAPTION = (
     "records outside London or without an LSOA are not included."
 )
 LONDON_CENTRE = {"lat": 51.51, "lon": -0.11}
+# Greater London's bounding box (lat/lon degrees): the All London map fits this, not the data.
+GREATER_LONDON = {"lat": (51.286, 51.692), "lon": (-0.510, 0.334)}
+CHARGED = "charged_or_court"
+TOP_TYPES = 4
+TOTAL_LABEL = "Total records"
+TOTAL_COLOUR = "#111111"
+# Qualitative palette, one colour per crime type. Dark24 minus its near-black entry (kept
+# for the total line); 23 distinct colours, enough for the 14 crime types including ASB.
+PALETTE = [c for c in px.colors.qualitative.Dark24 if c.lower() != "#222a2a"]
+QUALITY_GROUPS = {
+    "reconciliation": "Where every bronze row went",
+    "quarantine": "Quarantined rows, by reason",
+    "silver_flags": "Flags on kept rows",
+    "gold": "Gold layer checks",
+    "volume_anomalies": "Volume check",
+}
+QUALITY_ITEMS = {
+    "bronze_rows": "Bronze rows",
+    "silver": "Kept in silver",
+    "quarantined": "Quarantined",
+    "deduped": "Identical copies removed",
+    "superseded": "Superseded copies",
+    "archive_replaced": "Replaced by a newer archive",
+    "conflicting_duplicate_crime_id": "Conflicting duplicate Crime IDs",
+    "asb_rows": "Anti-social behaviour rows",
+    "no_location_rows": "Rows without location",
+    "attribute_conflict_rows": "Rows with conflicting attributes",
+    "fct_crimes_rows": "Rows in the fact table",
+    "orphan_fact_keys": "Fact rows missing a dimension key",
+    "flagged": "Months flagged",
+    "unacknowledged": "Flags not yet acknowledged",
+}
 
 
 # ------------------------------------------------------------------ data loading
@@ -86,6 +118,45 @@ def load_tables(
 
 
 cached_load_tables = st.cache_data(load_tables)
+
+
+# ------------------------------------------------------------------ formatting
+
+
+def fmt_int(value: float) -> str:
+    """A whole number with thousands separators: 1234567 -> '1,234,567'."""
+    return f"{round(value):,}"
+
+
+def fmt_pct(fraction: float) -> str:
+    """A share (0 to 1) as a percentage to one decimal place; tiny non-zero shares as <0.1%."""
+    if pd.isna(fraction):
+        return ""
+    if 0 < fraction < 0.0005:
+        return "<0.1%"
+    return f"{fraction:.1%}"
+
+
+def fmt_change(percent: float) -> str:
+    """A change already in percent, signed, one decimal: -94.88 -> '-94.9%'."""
+    return f"{percent:+,.1f}%"
+
+
+def styled(df: pd.DataFrame, formats: dict) -> "pd.io.formats.style.Styler":
+    """df with display formats per column; the values stay numeric, so sorting still works."""
+    return df.style.format(formats, na_rep="")
+
+
+def crime_type_colours(monthly: pd.DataFrame) -> dict[str, str]:
+    """One colour per crime type, fixed by the sorted list of all types in the data.
+
+    Computed from the whole table (not the selection), so a crime type has the same colour
+    in every chart and for every borough. Raises if there are more types than colours.
+    """
+    types = sorted(monthly["crime_type"].unique())
+    if len(types) > len(PALETTE):
+        raise ValueError(f"{len(types)} crime types but only {len(PALETTE)} colours")
+    return dict(zip(types, PALETTE, strict=False))
 
 
 # --------------------------------------------------------------- borough selection
@@ -152,19 +223,19 @@ def borough_headline(
 
 def london_comparison(
     monthly: pd.DataFrame, bounds: tuple[pd.Timestamp, pd.Timestamp], borough: str
-) -> str:
-    """One line placing the selection against London's recorded crime."""
+) -> str | None:
+    """One line placing a borough against London's recorded crime (None for All London)."""
+    if borough == ALL_LONDON:
+        return None
     recent = in_window(monthly, bounds)
     london = int(recent.loc[~recent["is_asb"], "crime_count"].sum())
-    if borough == ALL_LONDON:
-        return f"All of London: {london:,} crimes recorded in the last 12 months."
     own = int(
         for_borough(recent, borough).loc[lambda d: ~d["is_asb"], "crime_count"].sum()
     )
     share = own / london if london else 0.0
     return (
-        f"{borough} accounts for {share:.1%} of London's recorded crime in the last "
-        f"12 months ({own:,} of {london:,} crimes)."
+        f"{borough} accounts for {fmt_pct(share)} of London's recorded crime in the last "
+        f"12 months ({fmt_int(own)} of {fmt_int(london)} crimes)."
     )
 
 
@@ -190,22 +261,51 @@ def top_lsoas(ranking: pd.DataFrame, borough: str, n: int = 10) -> pd.DataFrame:
 # --------------------------------------------------------------------- figures
 
 
-def trend_figure(monthly: pd.DataFrame, borough: str, include_asb: bool) -> go.Figure:
-    """Monthly record counts by crime type for the selection."""
+def top_types(
+    monthly: pd.DataFrame,
+    bounds: tuple[pd.Timestamp, pd.Timestamp],
+    borough: str,
+    include_asb: bool,
+) -> list[str]:
+    """The selection's crime types, most records first over the last 12 months."""
+    recent = for_borough(in_window(monthly, bounds), borough)
+    if not include_asb:
+        recent = recent[~recent["is_asb"]]
+    totals = recent.groupby("crime_type")["crime_count"].sum()
+    return totals.sort_values(ascending=False, kind="stable").index.tolist()
+
+
+def trend_figure(
+    monthly: pd.DataFrame,
+    borough: str,
+    include_asb: bool,
+    crime_types: list[str],
+    colours: dict[str, str],
+) -> go.Figure:
+    """Monthly records for the selection: a total line plus one line per chosen crime type."""
     data = for_borough(monthly, borough)
     if not include_asb:
         data = data[~data["is_asb"]]
-    data = data.groupby(["month", "crime_type"], as_index=False)["crime_count"].sum()
-    figure = px.line(
-        data,
-        x="month",
-        y="crime_count",
-        color="crime_type",
-        labels={"month": "Month", "crime_count": "Records", "crime_type": "Crime type"},
-    )
+    by_type = data.groupby(["month", "crime_type"], as_index=False)["crime_count"].sum()
+    total = data.groupby("month", as_index=False)["crime_count"].sum()
+
+    figure = go.Figure()
+    figure.add_scatter(
+        x=total["month"], y=total["crime_count"], name=TOTAL_LABEL, mode="lines",
+        line={"color": TOTAL_COLOUR, "width": 3},
+    )  # fmt: skip
+    for crime_type in crime_types:
+        own = by_type[by_type["crime_type"] == crime_type]
+        figure.add_scatter(
+            x=own["month"], y=own["crime_count"], name=crime_type, mode="lines",
+            line={"color": colours[crime_type], "width": 2},
+        )  # fmt: skip
+    figure.update_traces(hovertemplate="%{y:,}")
+    figure.update_xaxes(title_text="Month")
+    figure.update_yaxes(title_text="Records", tickformat=",", rangemode="tozero")
     figure.update_layout(legend_title_text="", margin={"t": 30}, hovermode="x unified")
-    in_range = data["month"].min() <= MET_CHANGE_MONTH <= data["month"].max()
-    if borough != "City of London" and in_range:
+    months = data["month"]
+    if borough != "City of London" and months.min() <= MET_CHANGE_MONTH <= months.max():
         figure.add_shape(
             type="line", xref="x", yref="paper", x0=MET_CHANGE_MONTH,
             x1=MET_CHANGE_MONTH, y0=0, y1=1,
@@ -218,8 +318,40 @@ def trend_figure(monthly: pd.DataFrame, borough: str, include_asb: bool) -> go.F
     return figure
 
 
+def quality_tables(reconciliation: pd.DataFrame) -> list[tuple[str, pd.DataFrame]]:
+    """The reconciliation table as (plain-English heading, table) pairs, one per group.
+
+    Item labels come from QUALITY_ITEMS; a group or item that is not listed falls back to
+    its name with underscores turned into spaces, so a new row never breaks the page.
+    """
+
+    def plain(name: str) -> str:
+        return name.replace("_", " ").capitalize()
+
+    groups = [g for g in QUALITY_GROUPS if g in set(reconciliation["group"])]
+    groups += sorted(set(reconciliation["group"]) - set(QUALITY_GROUPS))
+    tables = []
+    for group in groups:
+        rows = reconciliation[reconciliation["group"] == group]
+        tables.append(
+            (
+                QUALITY_GROUPS.get(group, plain(group)),
+                pd.DataFrame(
+                    {
+                        "Item": rows["item"].map(
+                            lambda i: QUALITY_ITEMS.get(i, plain(i))
+                        ),
+                        "Rows": rows["rows"],
+                        "Share": rows["share"],
+                    }
+                ),
+            )
+        )
+    return tables
+
+
 def anomalies_table(anomalies: pd.DataFrame) -> pd.DataFrame:
-    """The flagged volume anomalies, formatted for display (newest month first)."""
+    """The flagged volume anomalies, newest month first (Change is already formatted)."""
     shown = anomalies.sort_values(["month", "force", "crime_type"], ascending=False)
     return pd.DataFrame(
         {
@@ -228,7 +360,7 @@ def anomalies_table(anomalies: pd.DataFrame) -> pd.DataFrame:
             "Month": shown["month"].dt.strftime("%Y-%m"),
             "Count": shown["crime_count"],
             "Baseline median": shown["baseline_median"].round(0).astype(int),
-            "Change": shown["pct_change"].map(lambda v: f"{v:+.1f}%"),
+            "Change": shown["pct_change"].map(fmt_change),
             "Status": shown["is_acknowledged"].map(
                 lambda ok: "Acknowledged" if ok else "Not acknowledged"
             ),
@@ -238,7 +370,10 @@ def anomalies_table(anomalies: pd.DataFrame) -> pd.DataFrame:
 
 
 def top_crime_types_figure(
-    monthly: pd.DataFrame, bounds: tuple[pd.Timestamp, pd.Timestamp], borough: str
+    monthly: pd.DataFrame,
+    bounds: tuple[pd.Timestamp, pd.Timestamp],
+    borough: str,
+    colours: dict[str, str],
 ) -> go.Figure:
     """Horizontal bars of crimes by type over the last 12 months (ASB excluded)."""
     recent = for_borough(in_window(monthly, bounds), borough)
@@ -252,18 +387,39 @@ def top_crime_types_figure(
         data,
         x="crime_count",
         y="crime_type",
+        color="crime_type",
+        color_discrete_map=colours,
         orientation="h",
         labels={"crime_count": "Crimes", "crime_type": ""},
     )
-    figure.update_layout(margin={"t": 10}, yaxis={"categoryorder": "total ascending"})
+    figure.update_traces(hovertemplate="%{y}: %{x:,}<extra></extra>")
+    figure.update_xaxes(tickformat=",")
+    figure.update_layout(
+        margin={"t": 10},
+        showlegend=False,
+        yaxis={"categoryorder": "total ascending"},
+    )
     return figure
 
 
-def outcome_figure(outcomes: pd.DataFrame) -> go.Figure:
-    """Stacked horizontal bars: share of each outcome group within a crime type."""
-    order = (
-        outcomes.groupby("crime_type")["crime_count"].sum().sort_values().index.tolist()
+def outcome_order(outcomes: pd.DataFrame) -> list[str]:
+    """Crime types by charged-or-at-court share, highest first (ties by name)."""
+    charged = (
+        outcomes[outcomes["outcome_group"] == CHARGED]
+        .set_index("crime_type")["share_of_crime_type"]
+        .reindex(sorted(outcomes["crime_type"].unique()))
+        .fillna(0.0)
     )
+    return charged.sort_values(ascending=False, kind="stable").index.tolist()
+
+
+def outcome_figure(outcomes: pd.DataFrame) -> go.Figure:
+    """Stacked horizontal bars: share of each outcome group within a crime type.
+
+    Crime types run from the highest charged-or-at-court share at the top to the lowest.
+    (px reverses category_orders for horizontal bars, so listing them highest first puts
+    the highest at the top.)
+    """
     data = outcomes.assign(
         outcome=outcomes["outcome_group"].map(OUTCOME_LABELS),
         percent=outcomes["share_of_crime_type"] * 100,
@@ -274,7 +430,10 @@ def outcome_figure(outcomes: pd.DataFrame) -> go.Figure:
         y="crime_type",
         color="outcome",
         orientation="h",
-        category_orders={"crime_type": order, "outcome": list(OUTCOME_LABELS.values())},
+        category_orders={
+            "crime_type": outcome_order(outcomes),
+            "outcome": list(OUTCOME_LABELS.values()),
+        },
         color_discrete_map={OUTCOME_LABELS[k]: v for k, v in OUTCOME_COLOURS.items()},
         hover_data={"crime_count": ":,", "percent": ":.1f"},
         labels={"percent": "Share of crimes (%)", "crime_type": "", "outcome": ""},
@@ -283,16 +442,19 @@ def outcome_figure(outcomes: pd.DataFrame) -> go.Figure:
     return figure
 
 
-def map_view(points: pd.DataFrame) -> tuple[dict[str, float], float]:
-    """Map centre and zoom that fit the points (centre of their bounding box).
+def fit_view(
+    lat_range: tuple[float, float],
+    lon_range: tuple[float, float],
+    padding: float = 0.3,
+    min_zoom: float = 8.0,
+) -> tuple[dict[str, float], float]:
+    """Map centre and zoom that fit a lat/lon box (centre of the box).
 
-    Uses Web Mercator scale (512-pixel tiles) for a map about 1,000 by 560 pixels, with a
-    little padding; the zoom is kept between 8 and 15.
+    Uses Web Mercator scale (512-pixel tiles) for a map about 1,000 by 560 pixels; the zoom
+    is reduced by `padding` and kept between min_zoom and 15.
     """
-    if points.empty:
-        return dict(LONDON_CENTRE), 9.0
-    lat_min, lat_max = points["latitude"].min(), points["latitude"].max()
-    lon_min, lon_max = points["longitude"].min(), points["longitude"].max()
+    lat_min, lat_max = lat_range
+    lon_min, lon_max = lon_range
     centre_lat = (lat_min + lat_max) / 2
     lat_span = max(lat_max - lat_min, 0.005)
     lon_span = max(lon_max - lon_min, 0.005)
@@ -300,17 +462,32 @@ def map_view(points: pd.DataFrame) -> tuple[dict[str, float], float]:
         560 * 360 * math.cos(math.radians(centre_lat)) / (512 * lat_span)
     )
     by_width = math.log2(1000 * 360 / (512 * lon_span))
-    zoom = min(by_height, by_width) - 0.3
+    zoom = min(by_height, by_width) - padding
     return {"lat": centre_lat, "lon": (lon_min + lon_max) / 2}, max(
-        8.0, min(15.0, zoom)
+        min_zoom, min(15.0, zoom)
     )
+
+
+def map_view(points: pd.DataFrame) -> tuple[dict[str, float], float]:
+    """Map centre and zoom that fit the points (their bounding box, a little padding)."""
+    if points.empty:
+        return dict(LONDON_CENTRE), 9.0
+    return fit_view(
+        (points["latitude"].min(), points["latitude"].max()),
+        (points["longitude"].min(), points["longitude"].max()),
+    )
+
+
+def london_view() -> tuple[dict[str, float], float]:
+    """Map centre and zoom that fill the frame with Greater London (tight padding)."""
+    return fit_view(GREATER_LONDON["lat"], GREATER_LONDON["lon"], padding=0.05)
 
 
 def hotspot_figure(ranking: pd.DataFrame, borough: str) -> go.Figure:
     """Map of the selection's LSOAs sized and coloured by non-ASB crime count, zoomed to fit."""
     data = for_borough(ranking, borough)
     data = data[data["latitude"].notna()]
-    centre, zoom = map_view(data)
+    centre, zoom = london_view() if borough == ALL_LONDON else map_view(data)
     figure = px.scatter_map(
         data,
         lat="latitude",
@@ -352,6 +529,7 @@ def main() -> None:
     outcome = snapshot["outcome"]
     window = snapshot["lsoa_window"]
     bounds = window_bounds(snapshot)
+    colours = crime_type_colours(monthly)
 
     options = borough_options(monthly)
     if "borough" not in st.session_state:
@@ -379,7 +557,7 @@ def main() -> None:
     columns = st.columns(3)
     columns[0].metric(
         "Crimes, last 12 months",
-        f"{figures['crimes']:,}",
+        fmt_int(figures["crimes"]),
         help=(
             f"Records in London LSOAs, {month_label(window['first'])} to "
             f"{month_label(window['last'])}, excluding anti-social behaviour."
@@ -387,26 +565,42 @@ def main() -> None:
     )
     columns[1].metric(
         "Anti-social behaviour",
-        f"{figures['asb_share']:.1%}",
-        help=f"Share of all records in the same 12 months ({figures['asb']:,} records).",
+        fmt_pct(figures["asb_share"]),
+        help=(
+            "Share of all records in the same 12 months "
+            f"({fmt_int(figures['asb'])} records)."
+        ),
     )
     columns[2].metric(
         "Charged or at court",
-        f"{figures['charge_rate']:.1%}",
+        fmt_pct(figures["charge_rate"]),
         help=(
             "Share of non-ASB records in the outcome group charged_or_court, using mature "
             f"months only ({month_label(outcome['first_month'])} to "
             f"{month_label(outcome['last_month'])})."
         ),
     )
-    st.markdown(london_comparison(monthly, bounds, borough))
+    comparison = london_comparison(monthly, bounds, borough)
+    if comparison:
+        st.markdown(comparison)
 
     st.header("Records by month")
     include_asb = st.checkbox("Include anti-social behaviour", value=True)
-    st.plotly_chart(trend_figure(monthly, borough, include_asb), width="stretch")
+    ranked = top_types(monthly, bounds, borough, include_asb)
+    chosen = st.multiselect(
+        "Crime types to show (the four biggest in the last 12 months by default)",
+        ranked,
+        default=ranked[:TOP_TYPES],
+        key=f"trend-types-{borough}-{include_asb}",  # a new selection resets the preset
+    )
+    st.plotly_chart(
+        trend_figure(monthly, borough, include_asb, chosen, colours), width="stretch"
+    )
 
     st.header("Top crime types, last 12 months")
-    st.plotly_chart(top_crime_types_figure(monthly, bounds, borough), width="stretch")
+    st.plotly_chart(
+        top_crime_types_figure(monthly, bounds, borough, colours), width="stretch"
+    )
 
     st.header("Outcomes by crime type")
     excluded = ", ".join(outcome["excluded_months"]) or "none"
@@ -432,13 +626,16 @@ def main() -> None:
     )
     top = top_lsoas(ranking, borough)
     st.dataframe(
-        top[["lsoa_name", "local_authority", "crime_count", "asb_count"]].rename(
-            columns={
-                "lsoa_name": "LSOA",
-                "local_authority": "Borough",
-                "crime_count": "Crimes",
-                "asb_count": "ASB",
-            }
+        styled(
+            top[["lsoa_name", "local_authority", "crime_count", "asb_count"]].rename(
+                columns={
+                    "lsoa_name": "LSOA",
+                    "local_authority": "Borough",
+                    "crime_count": "Crimes",
+                    "asb_count": "ASB",
+                }
+            ),
+            {"Crimes": fmt_int, "ASB": fmt_int},
         ),
         hide_index=True,
         width="stretch",
@@ -449,16 +646,13 @@ def main() -> None:
         "Every bronze row is classified exactly once; the pipeline fails if these counts "
         "do not add up."
     )
-    reconciliation = tables["reconciliation"].assign(
-        share=lambda df: df["share"].map(lambda v: "" if pd.isna(v) else f"{v:.2%}")
-    )
-    st.dataframe(
-        reconciliation.rename(
-            columns={"group": "Group", "item": "Item", "rows": "Rows", "share": "Share"}
-        ),
-        hide_index=True,
-        width="stretch",
-    )
+    for heading, table in quality_tables(tables["reconciliation"]):
+        st.markdown(f"**{heading}**")
+        st.dataframe(
+            styled(table, {"Rows": fmt_int, "Share": fmt_pct}),
+            hide_index=True,
+            width="stretch",
+        )
 
     st.subheader("Volume anomalies")
     rule = snapshot.get("volume_anomaly", {"threshold_pct": 50, "min_baseline": 500})
@@ -472,7 +666,14 @@ def main() -> None:
     if anomalies.empty:
         st.write("No volume anomalies flagged.")
     else:
-        st.dataframe(anomalies_table(anomalies), hide_index=True, width="stretch")
+        st.dataframe(
+            styled(
+                anomalies_table(anomalies),
+                {"Count": fmt_int, "Baseline median": fmt_int},
+            ),
+            hide_index=True,
+            width="stretch",
+        )
 
     st.divider()
     st.caption(
