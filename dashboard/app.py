@@ -56,14 +56,31 @@ def load_snapshot(data_dir: Path = DATA_DIR) -> dict:
     return json.loads((data_dir / "snapshot.json").read_text())
 
 
-def load_tables(data_dir: Path = DATA_DIR) -> dict[str, pd.DataFrame]:
-    """Read the exported Parquet files; month columns become datetimes."""
-    tables = {n: pd.read_parquet(data_dir / f"{n}.parquet") for n in TABLE_NAMES}
+def snapshot_version(snapshot: dict) -> str:
+    """Identify the snapshot's data: export time plus the silver run it came from."""
+    return f"{snapshot['exported_at']}|{snapshot['silver_run_id']}"
+
+
+def load_tables(
+    table_names: tuple[str, ...] = TABLE_NAMES,
+    version: str = "",
+    data_dir: Path = DATA_DIR,
+) -> dict[str, pd.DataFrame]:
+    """Read the exported Parquet files; month columns become datetimes.
+
+    `version` is not used in the body. It exists so that, once the function is wrapped in
+    st.cache_data, the cache key changes with the snapshot: st.cache_data keys on the
+    function's own code and its arguments, not on module globals such as TABLE_NAMES.
+    """
+    tables = {n: pd.read_parquet(data_dir / f"{n}.parquet") for n in table_names}
     for df in tables.values():
         for column in ("month", "first_month", "last_month"):
             if column in df.columns:
                 df[column] = pd.to_datetime(df[column])
     return tables
+
+
+cached_load_tables = st.cache_data(load_tables)
 
 
 # --------------------------------------------------------------- borough selection
@@ -294,8 +311,8 @@ def month_label(value: str | None) -> str:
 
 def main() -> None:
     st.set_page_config(page_title="UK Crime Lakehouse", layout="wide")
-    snapshot = st.cache_data(load_snapshot)()
-    tables = st.cache_data(load_tables)()
+    snapshot = load_snapshot()  # tiny, so not cached; its version keys the tables cache
+    tables = cached_load_tables(TABLE_NAMES, snapshot_version(snapshot))
     monthly = tables["mart_borough_monthly"]
     outcome = snapshot["outcome"]
     window = snapshot["lsoa_window"]

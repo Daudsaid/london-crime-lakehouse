@@ -15,6 +15,7 @@ pd = pytest.importorskip("pandas")
 pytest.importorskip("plotly")
 pytest.importorskip("streamlit")
 
+import streamlit as st
 from streamlit.testing.v1 import AppTest
 
 from tests.test_export import prepare_gold, sample_rows
@@ -108,6 +109,8 @@ def write_fake_snapshot(folder: Path) -> None:
         json.dumps(
             {
                 "archive_month": "2026-08",
+                "exported_at": "2026-10-28T18:13:28+00:00",
+                "silver_run_id": "run-1",
                 "lsoa_window": {"first": "2026-07", "last": "2026-08"},
             }
         )
@@ -117,13 +120,13 @@ def write_fake_snapshot(folder: Path) -> None:
 @pytest.fixture
 def fake(tmp_path: Path) -> dict:
     write_fake_snapshot(tmp_path / "data")
-    return app.load_tables(tmp_path / "data")
+    return app.load_tables(data_dir=tmp_path / "data")
 
 
 def committed_tables() -> dict:
     if not COMMITTED_DATA.is_dir():
         pytest.skip("no committed snapshot")
-    return app.load_tables(COMMITTED_DATA)
+    return app.load_tables(data_dir=COMMITTED_DATA)
 
 
 # ------------------------------------------------------------- loading functions
@@ -131,13 +134,68 @@ def committed_tables() -> dict:
 
 def test_loaders_read_the_exported_files(tmp_path: Path) -> None:
     write_fake_snapshot(tmp_path / "data")
-    tables = app.load_tables(tmp_path / "data")
+    tables = app.load_tables(data_dir=tmp_path / "data")
 
     assert set(tables) == set(app.TABLE_NAMES) == set(export.EXPORT_COLUMNS)
     assert tables["mart_borough_monthly"]["month"].dtype.kind == "M"  # real datetimes
     for name, columns in export.EXPORT_COLUMNS.items():
         assert list(tables[name].columns) == columns
     assert app.load_snapshot(tmp_path / "data")["archive_month"] == "2026-08"
+
+
+# ------------------------------------------------------------------ cache keys
+
+
+@pytest.fixture
+def cached_loader():
+    """A fresh st.cache_data wrapper over load_tables, with the cache cleared around it."""
+    st.cache_data.clear()
+    yield st.cache_data(app.load_tables)
+    st.cache_data.clear()
+
+
+def test_snapshot_version_changes_with_export_time_and_silver_run() -> None:
+    base = {"exported_at": "2026-10-28T18:13:28+00:00", "silver_run_id": "run-1"}
+
+    assert app.snapshot_version(base) == app.snapshot_version(dict(base))
+    assert app.snapshot_version(base) != app.snapshot_version(
+        {**base, "silver_run_id": "run-2"}
+    )
+    assert app.snapshot_version(base) != app.snapshot_version(
+        {**base, "exported_at": "2026-10-29T09:00:00+00:00"}
+    )
+
+
+def test_cached_loader_is_keyed_on_the_table_list(
+    tmp_path: Path, cached_loader
+) -> None:
+    write_fake_snapshot(tmp_path / "data")
+    data_dir = tmp_path / "data"
+    one = app.TABLE_NAMES[:1]
+
+    assert set(cached_loader(one, "v1", data_dir)) == set(one)
+    # The regression: a longer list must not be served the earlier, shorter cached dict.
+    assert set(cached_loader(app.TABLE_NAMES, "v1", data_dir)) == set(app.TABLE_NAMES)
+
+
+def test_cached_loader_is_keyed_on_the_snapshot_version(
+    tmp_path: Path, cached_loader
+) -> None:
+    write_fake_snapshot(tmp_path / "data")
+    data_dir = tmp_path / "data"
+    name = "mart_monthly_crimes"
+    before = cached_loader((name,), "v1", data_dir)[name]
+    pd.DataFrame({"month": ["2026-08"], "crime_count": [999]}).to_parquet(
+        data_dir / f"{name}.parquet"
+    )
+
+    same_version = cached_loader((name,), "v1", data_dir)[name]
+    new_version = cached_loader((name,), "v2", data_dir)[name]
+
+    assert same_version.equals(before)  # same key: the cached copy
+    assert new_version["crime_count"].tolist() == [
+        999
+    ]  # new snapshot version: fresh read
 
 
 # ------------------------------------------------------------ borough selection
@@ -424,7 +482,7 @@ def test_loaders_read_what_the_export_writes(spark, export_env: Path) -> None:
     prepare_gold(spark, sample_rows())
     export.run_export(spark)
 
-    tables = app.load_tables(export_env)
+    tables = app.load_tables(data_dir=export_env)
     snapshot = app.load_snapshot(export_env)
 
     for name, columns in export.EXPORT_COLUMNS.items():
