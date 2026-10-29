@@ -141,6 +141,10 @@ make test        # fast tests
 
 Each stage is also a target (`make extract`, `make bronze`, `make silver`, `make gold`), and extra flags go through `ARGS`, for example `make silver ARGS=--allow-schema-change`. Settings such as the data directory and the forces ingested are read from environment variables in [config.py](src/uk_crime/config.py).
 
+## Exploring the data
+
+`make explore` starts JupyterLab in `notebooks/` with an optional `explore` dependency group (Polars, `deltalake`, JupyterLab). It is not installed in CI and is not part of the dashboard's requirements. [`00_getting_started.ipynb`](notebooks/00_getting_started.ipynb) opens every bronze, silver and gold table with `polars.scan_delta`, reproduces the Criminal damage and arson drop in the Metropolitan Police data, and shows one aggregation in PySpark and in Polars. Paths come from `uk_crime.config`, the notebooks only read, and they need the pipeline to have run first.
+
 ## Project structure
 
 ```text
@@ -155,6 +159,7 @@ src/uk_crime/
 dashboard/          Streamlit app and its committed data snapshot
 tests/              188 tests with small in-memory fixtures
 analyses/           read-only profiling scripts behind the rules above
+notebooks/          read-only exploration notebooks (make explore)
 docs/               duplicate Crime ID profile and data caveats
 Makefile            pipeline, test, lint and profile targets
 .github/            CI workflow and Dependabot

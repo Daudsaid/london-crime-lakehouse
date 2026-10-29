@@ -4,7 +4,7 @@
 .DEFAULT_GOAL := help
 ARGS ?=
 
-.PHONY: help extract bronze silver gold export dashboard requirements pipeline test test-all lint format profile
+.PHONY: help extract bronze silver gold export dashboard explore requirements pipeline test test-all lint format profile
 
 help: ## List the available targets
 	@awk 'BEGIN {FS = ":.*## "} /^[a-z-]+:.*## / {printf "  %-10s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -26,6 +26,9 @@ export: ## Write the dashboard snapshot (dashboard/data/) from gold
 
 dashboard: ## Run the Streamlit dashboard locally (reads dashboard/data/ only)
 	uv run --group dashboard streamlit run dashboard/app.py $(ARGS)
+
+explore: ## Start JupyterLab in notebooks/ (read-only exploration with Polars)
+	uv run --group explore jupyter lab --notebook-dir notebooks
 
 requirements: ## Regenerate dashboard/requirements.txt from uv.lock
 	@{ sed -n '1,3p' dashboard/requirements.txt; \
