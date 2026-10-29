@@ -88,11 +88,16 @@ Outcome shares for three crime types. The period is 2023-09 to 2025-04, excludin
 
 The dashboard is live at <https://london-crime-lakehouse.streamlit.app/>. A small [Streamlit](dashboard/app.py) app reads a committed snapshot of the gold layer (`dashboard/data/`: seven Parquet files and a `snapshot.json`, 227 KB in total), so it needs neither Spark nor a pipeline run. A sidebar selector picks "All London" or one of the 33 boroughs, and the choice is kept in the URL (`?borough=Camden`), so a view can be shared; an unknown name falls back to All London. For the selection it shows:
 
-- headline figures: crimes in the last 12 months, anti-social behaviour share, and the charged-or-at-court share for mature months, plus a line giving the borough's share of London's recorded crime
-- monthly records by crime type, and the top crime types of the last 12 months
-- outcome groups by crime type, stating the period and the excluded outlier month
-- a map of the selection's LSOAs, zoomed to fit, and its ten LSOAs with the most crimes
-- the reconciliation table, and a footer with the snapshot's archive month, silver run id and links to this repository and [the data caveats](docs/data-caveats.md)
+- headline figures: crimes in the last 12 months, anti-social behaviour share, and the charged-or-at-court share for mature months; for a borough, a line giving its share of London's recorded crime (hidden for All London, where it would always be 100%)
+- monthly records: a thick "Total records" line that is always shown, plus one line per crime type chosen in a "Crime types to show" box. The box starts with the four biggest types of the last 12 months for the selection, and resets when the borough or the anti-social behaviour tick changes. A dashed marker at 2026-05 shows the Metropolitan Police recording change
+- the top crime types of the last 12 months
+- outcome groups by crime type, sorted by charged-or-at-court share with the highest at the top, stating the period and the excluded outlier month
+- a map of the selection's LSOAs (All London fits the Greater London bounding box, a borough fits its own LSOAs), and its ten LSOAs with the most crimes
+- the data-quality panel: one small table per group under a plain-English heading ("Where every bronze row went", "Quarantined rows, by reason", "Flags on kept rows", "Gold layer checks"), then the volume anomalies, and a footer with the snapshot's archive month, silver run id and links to this repository and [the data caveats](docs/data-caveats.md)
+
+Each crime type keeps one colour everywhere: colours are assigned from the sorted list of all crime types in the snapshot (plotly's Dark24 palette without its near-black, which is kept for the total line), so a type has the same colour on every borough and on both the trend and the top-types charts. Adding or renaming a crime type in the data would shift the colours of the types after it alphabetically.
+
+Numbers use thousands separators and percentages one decimal place. Tables are formatted for display only, so their columns stay numeric and sort correctly. A share above zero but below 0.05% shows as "<0.1%" rather than "0.0%".
 
 Every borough view carries the caveat that these are counts, not rates (there is no population denominator yet) and cover London LSOAs only.
 
@@ -159,7 +164,7 @@ src/uk_crime/
   gold.py           dimensions, fact table, marts
   export.py         small Parquet snapshot of gold for the dashboard
 dashboard/          Streamlit app and its committed data snapshot
-tests/              220 tests with small in-memory fixtures
+tests/              235 tests with small in-memory fixtures
 analyses/           read-only profiling scripts behind the rules above
 notebooks/          read-only exploration notebooks (make explore)
 docs/               duplicate Crime ID profile and data caveats
@@ -170,15 +175,15 @@ CLAUDE.md           the engineering rules the project follows
 
 ## Testing and CI
 
-There are 220 tests, none of which touch the network or `data/`. They use small fixtures and cover:
+There are 235 tests, none of which touch the network or `data/`. They use small fixtures and cover:
 
 - landing: a tiny zip built in a temp folder, retry and no-retry cases, atomic landing and idempotency
 - bronze: metadata parsing, kept corrupt rows and header drift
 - silver: every deduplication case, the order of the data-quality rules, vocabulary errors, reconciliation, the quarantine guardrail, run-id consistency and the schema-change path
-- export and dashboard: the exported files and columns, the stale-summary refusal, the loading functions, and the page itself rendered headlessly from the committed snapshot
+- export and dashboard: the exported files and columns, the stale-summary refusal, the loading functions, the trend lines and default crime types, the fixed colour palette, number formatting, the outcome sort order, the map views, the data-quality labels, and the page itself rendered headlessly from the committed snapshot
 - gold: the dimensions and their UNKNOWN members, financial-year boundaries, key uniqueness, referential integrity, mart reconciliation, the silver consistency gate and re-run determinism
 
-`make test` runs the 195 fast tests in about 100 seconds (99.5 s). The 25 end-to-end tests that write real Delta tables are marked `slow`; `make test-all` runs all 220 in about 7 minutes (408 seconds). Both were measured on an 8 GB Apple-silicon Mac, and both use the optional dashboard dependency group. CI ([ci.yml](.github/workflows/ci.yml)) runs ruff, the format check and the fast tests on every push, adds the slow tests on pull requests to `main`, and caches the Delta jars. Dependabot proposes weekly updates for the actions and the Python dependencies.
+`make test` runs the 210 fast tests in about 2 minutes (115 s). The 25 end-to-end tests that write real Delta tables are marked `slow`; `make test-all` runs all 235 in about 7 minutes (422 seconds). Both were measured on an 8 GB Apple-silicon Mac, and both use the optional dashboard dependency group. CI ([ci.yml](.github/workflows/ci.yml)) runs ruff, the format check and the fast tests on every push, adds the slow tests on pull requests to `main`, and caches the Delta jars. Dependabot proposes weekly updates for the actions and the Python dependencies.
 
 ## Roadmap
 
