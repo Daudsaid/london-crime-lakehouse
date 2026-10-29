@@ -310,7 +310,7 @@ def month_label(value: str | None) -> str:
 
 
 def main() -> None:
-    st.set_page_config(page_title="UK Crime Lakehouse", layout="wide")
+    st.set_page_config(page_title="London Crime Lakehouse", layout="wide")
     snapshot = load_snapshot()  # tiny, so not cached; its version keys the tables cache
     tables = cached_load_tables(TABLE_NAMES, snapshot_version(snapshot))
     monthly = tables["mart_borough_monthly"]
@@ -329,7 +329,7 @@ def main() -> None:
     else:
         st.query_params["borough"] = borough
 
-    st.title("UK Crime Lakehouse")
+    st.title("London Crime Lakehouse")
     st.caption(
         "Metropolitan and City of London Police street-level records, "
         f"{snapshot['months']['first']} to {snapshot['months']['last']}. "

@@ -1,11 +1,11 @@
-# CLAUDE.md — UK Crime Lakehouse
+# CLAUDE.md — London Crime Lakehouse
 
 Read this fully before doing anything. These rules override your defaults.
 
 ## 1. Purpose
 A portfolio data engineering project for UK Databricks Data Engineer roles: a local PySpark +
-Delta Lake ELT lakehouse on UK police crime data (data.police.uk), designed to move to
-Databricks later (Auto Loader, Lakeflow Declarative Pipelines, Unity Catalog, Lakeflow Jobs).
+Delta Lake ELT lakehouse on Metropolitan and City of London Police crime data
+(data.police.uk), designed to move to Databricks later (Auto Loader, Lakeflow Declarative Pipelines, Unity Catalog, Lakeflow Jobs).
 The owner must be able to explain every line in an interview, so prefer clear and idiomatic
 over clever.
 
@@ -83,7 +83,7 @@ Data lives in data/ (gitignored): landing/, lakehouse/{bronze,silver,gold}/.
 - All business logic lives in silver and gold. Gold reads only from silver, never bronze.
 
 ## 4. Data source facts
-- Monthly archives: https://data.police.uk/data/archive/YYYY-MM.zip (large, all forces).
+- Monthly archives: https://data.police.uk/data/archive/YYYY-MM.zip (large, all forces except Greater Manchester).
 - Archives overlap (rolling ~36-month window), so the same crime appears in many archives,
   sometimes with an updated outcome. The newest archive wins.
 - Anti-social behaviour rows have no Crime ID.

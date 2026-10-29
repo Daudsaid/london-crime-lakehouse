@@ -1,4 +1,4 @@
-# UK Crime Lakehouse. Run `make help` for the list of targets.
+# London Crime Lakehouse. Run `make help` for the list of targets.
 # Pass extra CLI arguments with ARGS, e.g. make silver ARGS=--allow-schema-change
 
 .DEFAULT_GOAL := help
