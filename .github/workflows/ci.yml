@@ -44,6 +44,15 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked --group dashboard
 
+      # dashboard/requirements.txt is generated from uv.lock; fail if the two have drifted.
+      - name: Check dashboard requirements match uv.lock
+        run: |
+          make requirements
+          if ! git diff --exit-code -- dashboard/requirements.txt; then
+            echo "::error file=dashboard/requirements.txt::Out of date with uv.lock. Run 'make requirements' and commit the result."
+            exit 1
+          fi
+
       - name: ruff check
         run: uv run ruff check .
 
