@@ -18,6 +18,11 @@ dev = [
     "pytest>=9.1.1",
     "ruff>=0.17.2",
 ]
+explore = [
+    "deltalake>=1.6.6",
+    "jupyterlab>=4.6.4",
+    "polars>=2.1.0",
+]
 
 [build-system]
 requires = ["uv_build>=0.13.5,<0.14"]
