@@ -106,6 +106,80 @@ row is "Status update unavailable" (no "Under investigation" rows and no NULL ou
 2026-04 every placeholder row is "Under investigation" (no "Status update unavailable"). Both
 count as placeholders in silver and gold.
 
+## Metropolitan Police source changes, 2026-04/05
+
+Three things change in the Metropolitan Police files around 2026-04 and 2026-05. These are
+observations from archive 2026-08, the only archive landed, so earlier archives cannot be
+compared. The cause of each is unverified and none of them is a pipeline fault: every row
+reconciles and none of these rows is quarantined.
+
+**1. Criminal damage and arson falls by about 94% from 2026-05.** Silver rows, all forces,
+and the Metropolitan Police and City of London Police split for the last seven months:
+
+| | 2025-09 | 2025-12 | 2026-02 | 2026-03 | 2026-04 | 2026-05 | 2026-06 | 2026-07 | 2026-08 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| All forces | 4,526 | 4,247 | 3,998 | 4,432 | 4,352 | **245** | 242 | 281 | 254 |
+| Metropolitan | | | 3,978 | 4,405 | 4,322 | **221** | 215 | 245 | 240 |
+| City of London | | | 20 | 27 | 30 | 24 | 27 | 36 | 14 |
+
+- The raw `crime_type` strings in bronze are the same 14 values in all 36 months, so there
+  is no renamed or new value at the same time.
+- The surviving Metropolitan rows all have a location and an LSOA, and the same outcome mix
+  as before. They cover about 200 LSOAs a month, against about 2,400 before.
+- No other crime type changes by more than 50% from one month to the next between 2025-09
+  and 2026-08 (the largest are Bicycle theft at 26% and Theft from the person at -21%).
+
+**2. Other types rise by more than usual in the same month.** Metropolitan rows, April to
+May, in 2025 and in 2026:
+
+| Crime type | 2025-04 | 2025-05 | Change | 2026-04 | 2026-05 | Change |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Criminal damage and arson | 4,640 | 4,827 | +187 | 4,322 | 221 | **-4,101** |
+| Violence and sexual offences | 21,617 | 23,231 | +1,614 | 22,285 | 25,545 | +3,260 |
+| Anti-social behaviour | 19,454 | 21,562 | +2,108 | 19,506 | 23,030 | +3,524 |
+| Public order | 4,457 | 4,934 | +477 | 4,553 | 5,340 | +787 |
+| Other theft | 8,058 | 8,555 | +497 | 7,278 | 8,058 | +780 |
+| Shoplifting | 7,000 | 7,813 | +813 | 8,124 | 8,926 | +802 |
+| Theft from the person | 7,573 | 7,008 | -565 | 5,771 | 5,656 | -115 |
+| Robbery | 2,598 | 2,748 | +150 | 2,414 | 2,787 | +373 |
+| Vehicle crime | 6,761 | 7,124 | +363 | 6,597 | 6,989 | +392 |
+| Drugs | 4,602 | 4,946 | +344 | 3,592 | 3,418 | -174 |
+| Bicycle theft | 1,174 | 1,338 | +164 | 1,122 | 1,367 | +245 |
+| Burglary | 3,629 | 3,814 | +185 | 3,498 | 3,528 | +30 |
+| Other crime | 1,163 | 1,054 | -109 | 1,160 | 1,149 | -11 |
+| Possession of weapons | 485 | 430 | -55 | 671 | 659 | -12 |
+
+The total number of Metropolitan rows hardly moves (90,893 to 96,673, +6%). Taken together,
+the other thirteen types gain about 3,900 rows more than their 2025 April-to-May change,
+against 4,288 fewer for Criminal damage and arson. That is consistent with some records
+being recorded under another type (mostly violence and anti-social behaviour), but nothing
+in the data shows it.
+
+**3. Three Metropolitan changes, two of them in 2026-05.** Metropolitan rows per month:
+
+| | 2026-03 | 2026-04 | 2026-05 | 2026-06 | 2026-07 | 2026-08 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Placeholder "Status update unavailable" | 11,736 | 0 | 0 | 0 | 0 | 0 |
+| Placeholder "Under investigation" | 0 | 12,418 | 14,095 | 15,660 | 21,870 | 31,485 |
+| Rows in LSOAs outside London | 526 | 479 | **23** | 18 | 32 | 18 |
+| Criminal damage and arson rows | 4,405 | 4,322 | **221** | 215 | 245 | 240 |
+
+- The placeholder text changes in 2026-04 (see "Outcome maturity" above); the outside-London
+  rows and the Criminal damage and arson rows both change in 2026-05.
+- The outside-London drop is not specific to one type: Violence and sexual offences outside
+  London goes from 275 (2026-04) to 7 (2026-05).
+- All three affect only the Metropolitan Police; City of London Police is unchanged. They may
+  share a cause on the Metropolitan side, but the data does not say so.
+
+**What the pipeline does about it.** `dq_volume_anomalies` (gold) flags any force, crime type
+and month whose count differs from the median of the previous three months by more than 50%,
+when that median is at least 500 rows. It logs each flag at WARNING and never fails a run.
+On archive 2026-08 it flags exactly two rows, Metropolitan Criminal damage and arson in
+2026-05 (-94.9%) and 2026-06 (-95.0%; the baseline still holds two normal months), and both
+are acknowledged in `config.ACKNOWLEDGED_VOLUME_ANOMALIES`. An acknowledged flag stays in the
+table and on the dashboard with its note. The dashboard marks 2026-05 on the trend chart as
+"Met recording change" and lists the flags in its data-quality panel.
+
 ## Rankings are counts
 
 `mart_lsoa_ranking` ranks London LSOAs by non-ASB `crime_count` over the newest 12 months

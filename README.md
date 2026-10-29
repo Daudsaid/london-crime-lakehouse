@@ -86,7 +86,7 @@ Outcome shares for three crime types. The period is 2023-09 to 2025-04, excludin
 
 ## Dashboard
 
-The dashboard is live at <https://london-crime-lakehouse.streamlit.app/>. A small [Streamlit](dashboard/app.py) app reads a committed snapshot of the gold layer (`dashboard/data/`: six Parquet files and a `snapshot.json`, 223 KB in total), so it needs neither Spark nor a pipeline run. A sidebar selector picks "All London" or one of the 33 boroughs, and the choice is kept in the URL (`?borough=Camden`), so a view can be shared; an unknown name falls back to All London. For the selection it shows:
+The dashboard is live at <https://london-crime-lakehouse.streamlit.app/>. A small [Streamlit](dashboard/app.py) app reads a committed snapshot of the gold layer (`dashboard/data/`: seven Parquet files and a `snapshot.json`, 227 KB in total), so it needs neither Spark nor a pipeline run. A sidebar selector picks "All London" or one of the 33 boroughs, and the choice is kept in the URL (`?borough=Camden`), so a view can be shared; an unknown name falls back to All London. For the selection it shows:
 
 - headline figures: crimes in the last 12 months, anti-social behaviour share, and the charged-or-at-court share for mature months, plus a line giving the borough's share of London's recorded crime
 - monthly records by crime type, and the top crime types of the last 12 months
@@ -121,6 +121,8 @@ The full list, with numbers, is in [docs/data-caveats.md](docs/data-caveats.md).
 
 - **Coverage is partial.** Greater Manchester is absent from the archive, the set of forces varies by month, and only the Metropolitan and City of London forces are ingested.
 - **Some Metropolitan records are outside London.** 12,868 of 3,378,444 Metropolitan rows with an LSOA (0.38%) fall in LSOAs outside London. Their monthly number ran between 224 and 681 until 2026-04 and between 20 and 35 from 2026-05; the cause has not been checked. The ranking mart covers London LSOAs only.
+- **The Metropolitan Police files change in 2026-04/05.** Criminal damage and arson falls by about 94% from 2026-05 while other types rise, the placeholder outcome text changes in 2026-04, and records outside London drop in 2026-05. The cause is unverified. A gold check (`dq_volume_anomalies`) flags the drop, the dashboard marks it on the trend chart, and the trend for Criminal damage and arson is not comparable across it.
+- **The volume check is quiet apart from that.** `dq_volume_anomalies` flags only the Metropolitan Criminal damage and arson change, across 36 months, 2 forces and 14 crime types. It compares each month with the median of the previous three, so it catches sudden drops and spikes, not slow drift.
 - **Recent outcomes are incomplete.** The share of rows with a placeholder outcome rises from about 2% for older months to 43% for 2026-08, which is why the outcome mart leaves out the newest 16 months.
 - **Rankings are counts, and tiers are a judgement.** The crime severity tiers and outcome groups are this project's own mappings, not official classifications.
 
@@ -157,7 +159,7 @@ src/uk_crime/
   gold.py           dimensions, fact table, marts
   export.py         small Parquet snapshot of gold for the dashboard
 dashboard/          Streamlit app and its committed data snapshot
-tests/              188 tests with small in-memory fixtures
+tests/              220 tests with small in-memory fixtures
 analyses/           read-only profiling scripts behind the rules above
 notebooks/          read-only exploration notebooks (make explore)
 docs/               duplicate Crime ID profile and data caveats
@@ -168,7 +170,7 @@ CLAUDE.md           the engineering rules the project follows
 
 ## Testing and CI
 
-There are 188 tests, none of which touch the network or `data/`. They use small fixtures and cover:
+There are 220 tests, none of which touch the network or `data/`. They use small fixtures and cover:
 
 - landing: a tiny zip built in a temp folder, retry and no-retry cases, atomic landing and idempotency
 - bronze: metadata parsing, kept corrupt rows and header drift
@@ -176,7 +178,7 @@ There are 188 tests, none of which touch the network or `data/`. They use small 
 - export and dashboard: the exported files and columns, the stale-summary refusal, the loading functions, and the page itself rendered headlessly from the committed snapshot
 - gold: the dimensions and their UNKNOWN members, financial-year boundaries, key uniqueness, referential integrity, mart reconciliation, the silver consistency gate and re-run determinism
 
-`make test` runs the 164 fast tests in about 103 seconds. The 24 end-to-end tests that write real Delta tables are marked `slow`; `make test-all` runs all 188 in about 6 minutes (374 seconds). Both were measured on an 8 GB Apple-silicon Mac, and both use the optional dashboard dependency group. CI ([ci.yml](.github/workflows/ci.yml)) runs ruff, the format check and the fast tests on every push, adds the slow tests on pull requests to `main`, and caches the Delta jars. Dependabot proposes weekly updates for the actions and the Python dependencies.
+`make test` runs the 195 fast tests in about 100 seconds (99.5 s). The 25 end-to-end tests that write real Delta tables are marked `slow`; `make test-all` runs all 220 in about 7 minutes (408 seconds). Both were measured on an 8 GB Apple-silicon Mac, and both use the optional dashboard dependency group. CI ([ci.yml](.github/workflows/ci.yml)) runs ruff, the format check and the fast tests on every push, adds the slow tests on pull requests to `main`, and caches the Delta jars. Dependabot proposes weekly updates for the actions and the Python dependencies.
 
 ## Roadmap
 

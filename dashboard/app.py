@@ -25,8 +25,13 @@ TABLE_NAMES = (
     "mart_lsoa_ranking",
     "mart_borough_monthly",
     "mart_borough_outcomes",
+    "dq_volume_anomalies",
     "reconciliation",
 )
+# The month the Metropolitan Police's recording changed (see docs/data-caveats.md). Drawn on
+# the trend for every selection except City of London, which is a different force.
+MET_CHANGE_MONTH = pd.Timestamp("2026-05-01")
+MET_CHANGE_LABEL = "Met recording change"
 OUTCOME_COLOURS = {
     "no_further_action": "#9aa5b1",
     "charged_or_court": "#1f6fb2",
@@ -198,8 +203,38 @@ def trend_figure(monthly: pd.DataFrame, borough: str, include_asb: bool) -> go.F
         color="crime_type",
         labels={"month": "Month", "crime_count": "Records", "crime_type": "Crime type"},
     )
-    figure.update_layout(legend_title_text="", margin={"t": 10}, hovermode="x unified")
+    figure.update_layout(legend_title_text="", margin={"t": 30}, hovermode="x unified")
+    in_range = data["month"].min() <= MET_CHANGE_MONTH <= data["month"].max()
+    if borough != "City of London" and in_range:
+        figure.add_shape(
+            type="line", xref="x", yref="paper", x0=MET_CHANGE_MONTH,
+            x1=MET_CHANGE_MONTH, y0=0, y1=1,
+            line={"color": "#6b7280", "width": 1, "dash": "dash"},
+        )  # fmt: skip
+        figure.add_annotation(
+            x=MET_CHANGE_MONTH, y=1, xref="x", yref="paper", text=MET_CHANGE_LABEL,
+            showarrow=False, yanchor="bottom", font={"size": 11, "color": "#6b7280"},
+        )  # fmt: skip
     return figure
+
+
+def anomalies_table(anomalies: pd.DataFrame) -> pd.DataFrame:
+    """The flagged volume anomalies, formatted for display (newest month first)."""
+    shown = anomalies.sort_values(["month", "force", "crime_type"], ascending=False)
+    return pd.DataFrame(
+        {
+            "Force": shown["force"],
+            "Crime type": shown["crime_type"],
+            "Month": shown["month"].dt.strftime("%Y-%m"),
+            "Count": shown["crime_count"],
+            "Baseline median": shown["baseline_median"].round(0).astype(int),
+            "Change": shown["pct_change"].map(lambda v: f"{v:+.1f}%"),
+            "Status": shown["is_acknowledged"].map(
+                lambda ok: "Acknowledged" if ok else "Not acknowledged"
+            ),
+            "Note": shown["note"].fillna(""),
+        }
+    )
 
 
 def top_crime_types_figure(
@@ -424,6 +459,20 @@ def main() -> None:
         hide_index=True,
         width="stretch",
     )
+
+    st.subheader("Volume anomalies")
+    rule = snapshot.get("volume_anomaly", {"threshold_pct": 50, "min_baseline": 500})
+    st.write(
+        "Months where a crime type's count differs from the median of the previous three "
+        f"months by more than {rule['threshold_pct']:g}%, for baselines of at least "
+        f"{rule['min_baseline']} records. A flag is information, not an error; "
+        "acknowledged ones have a known source change."
+    )
+    anomalies = tables["dq_volume_anomalies"]
+    if anomalies.empty:
+        st.write("No volume anomalies flagged.")
+    else:
+        st.dataframe(anomalies_table(anomalies), hide_index=True, width="stretch")
 
     st.divider()
     st.caption(

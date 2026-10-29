@@ -59,6 +59,10 @@ EXPORT_COLUMNS: dict[str, list[str]] = {
         "share_of_crime_type", "first_month", "last_month", "months_used",
         "excluded_months",
     ],
+    "dq_volume_anomalies": [
+        "force", "crime_type", "month", "crime_count", "baseline_median",
+        "pct_change", "is_acknowledged", "note",
+    ],
     "reconciliation": ["group", "item", "rows", "share"],
 }  # fmt: skip
 SNAPSHOT_FILE = "snapshot.json"
@@ -109,9 +113,14 @@ def lsoa_centroids(
 
 
 def reconciliation_table(
-    spark: SparkSession, summary: dict[str, object], fct_rows: int, orphan_keys: int
+    spark: SparkSession,
+    summary: dict[str, object],
+    fct_rows: int,
+    orphan_keys: int,
+    anomalies: DataFrame,
 ) -> DataFrame:
-    """Silver's reconciliation (from its run summary) plus two gold checks, as a table."""
+    """Silver's reconciliation (from its run summary), two gold checks and the volume-anomaly
+    counts (from the small dq_volume_anomalies table), as a table."""
     classes: dict[str, int] = summary["classes"]  # type: ignore[assignment]
     bronze_rows: int = summary["bronze_rows"]  # type: ignore[assignment]
     silver_rows = classes["silver"]
@@ -129,6 +138,12 @@ def reconciliation_table(
     rows += [
         ("gold", "fct_crimes_rows", fct_rows, fct_rows / silver_rows),
         ("gold", "orphan_fact_keys", orphan_keys, None),
+    ]
+    flagged = anomalies.count()
+    unacknowledged = anomalies.where(~F.col("is_acknowledged")).count()
+    rows += [
+        ("volume_anomalies", "flagged", flagged, None),
+        ("volume_anomalies", "unacknowledged", unacknowledged, None),
     ]
     return spark.createDataFrame(rows, RECONCILIATION_SCHEMA)
 
@@ -175,8 +190,11 @@ def export_tables(
         "mart_borough_outcomes": tables["mart_borough_outcomes"].orderBy(
             "local_authority", "crime_type", "outcome_group"
         ),
+        "dq_volume_anomalies": tables["dq_volume_anomalies"].orderBy(
+            "month", "force", "crime_type"
+        ),
         "reconciliation": reconciliation_table(
-            fct.sparkSession, summary, fct_rows, orphans
+            fct.sparkSession, summary, fct_rows, orphans, tables["dq_volume_anomalies"]
         ),
     }
     return {name: df.select(*EXPORT_COLUMNS[name]) for name, df in exports.items()}
@@ -215,6 +233,10 @@ def build_snapshot(
         "lsoa_window": {
             "first": f"{lsoa['first_month']:%Y-%m}" if lsoa else None,
             "last": f"{lsoa['last_month']:%Y-%m}" if lsoa else None,
+        },
+        "volume_anomaly": {
+            "threshold_pct": config.VOLUME_ANOMALY_THRESHOLD_PCT,
+            "min_baseline": config.VOLUME_ANOMALY_MIN_BASELINE,
         },
         "file_bytes": file_sizes,
     }

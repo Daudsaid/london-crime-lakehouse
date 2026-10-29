@@ -737,6 +737,262 @@ def test_reconcile_raises_when_a_borough_mart_loses_rows(spark: SparkSession) ->
         gold.reconcile_gold(broken, crimes.count(), 6, 12)
 
 
+# ---------------------------------------------------------- dq_volume_anomalies
+
+MONTHLY_MART_COLUMNS = (
+    "force_key string, crime_type string, month date, crime_count long"
+)
+NO_ACK: tuple[config.AcknowledgedAnomaly, ...] = ()
+MET_BURGLARY = ("metropolitan", "Burglary")
+MET_ACK = config.AcknowledgedAnomaly(
+    force="metropolitan", crime_type="Burglary", from_month="2026-04", note="known"
+)
+
+
+def month_n(n: int) -> date:
+    """The n-th month (0-based) from 2026-01."""
+    return date(2026 + n // 12, n % 12 + 1, 1)
+
+
+def monthly_mart(
+    spark: SparkSession, series: dict[tuple[str, str], list[int | None]]
+) -> DataFrame:
+    """A mart_monthly_crimes stand-in: one row per (force, crime type, month).
+
+    A None count leaves the row out (the crime type had no rows that month).
+    """
+    rows = [
+        (force, crime_type, month_n(i), count_)
+        for (force, crime_type), counts in series.items()
+        for i, count_ in enumerate(counts)
+        if count_ is not None
+    ]
+    return spark.createDataFrame(rows, MONTHLY_MART_COLUMNS)
+
+
+def anomalies(
+    df: DataFrame,
+    ack: tuple[config.AcknowledgedAnomaly, ...] = NO_ACK,
+    threshold: float = 50.0,
+    min_baseline: int = 500,
+) -> DataFrame:
+    return gold.build_dq_volume_anomalies(df, threshold, min_baseline, ack)
+
+
+def flags(df: DataFrame) -> list[tuple[Any, ...]]:
+    return sorted(
+        (r["force"], r["crime_type"], r["month"], r["crime_count"])
+        for r in df.collect()
+    )
+
+
+def test_volume_check_flags_a_drop_against_the_previous_three_months(
+    spark: SparkSession,
+) -> None:
+    mart = monthly_mart(spark, {MET_BURGLARY: [1000, 1000, 1000, 400, 1000]})
+    result = anomalies(mart)
+
+    assert flags(result) == [("metropolitan", "Burglary", month_n(3), 400)]
+    row = result.first()
+    assert (row["baseline_median"], row["pct_change"]) == (1000.0, -60.0)
+    assert (row["is_acknowledged"], row["note"]) == (False, None)
+
+
+def test_volume_check_flags_a_spike_too(spark: SparkSession) -> None:
+    mart = monthly_mart(spark, {MET_BURGLARY: [1000, 1000, 1000, 1800]})
+    assert [r["pct_change"] for r in anomalies(mart).collect()] == [80.0]
+
+
+def test_volume_check_ignores_small_baselines(spark: SparkSession) -> None:
+    mart = monthly_mart(spark, {("city-of-london", "Burglary"): [100, 100, 100, 5]})
+    assert anomalies(mart).count() == 0
+
+
+def test_volume_check_ignores_normal_seasonal_swings(spark: SparkSession) -> None:
+    mart = monthly_mart(
+        spark, {MET_BURGLARY: [1000, 1200, 1000, 1300, 800, 1250, 1500, 1100]}
+    )
+    assert anomalies(mart).count() == 0
+
+
+@pytest.mark.parametrize(
+    ("count_", "flagged"), [(500, False), (499, True), (1500, False), (1501, True)]
+)
+def test_volume_check_threshold_is_strictly_more_than_50_percent(
+    spark: SparkSession, count_: int, flagged: bool
+) -> None:
+    mart = monthly_mart(spark, {MET_BURGLARY: [1000, 1000, 1000, count_]})
+    assert (anomalies(mart).count() == 1) is flagged
+
+
+@pytest.mark.parametrize(("baseline", "flagged"), [(500, True), (499, False)])
+def test_volume_check_baseline_minimum_is_inclusive(
+    spark: SparkSession, baseline: int, flagged: bool
+) -> None:
+    mart = monthly_mart(spark, {MET_BURGLARY: [baseline] * 3 + [10]})
+    assert (anomalies(mart).count() == 1) is flagged
+
+
+def test_volume_check_baseline_is_a_median_not_a_mean(spark: SparkSession) -> None:
+    """One spiky month in the baseline must not move it (a mean would be 2333)."""
+    mart = monthly_mart(spark, {MET_BURGLARY: [1000, 5000, 1000, 1000]})
+    assert anomalies(mart).count() == 0
+
+
+def test_volume_check_thresholds_come_from_the_arguments(spark: SparkSession) -> None:
+    mart = monthly_mart(spark, {MET_BURGLARY: [1000, 1000, 1000, 800]})
+    assert anomalies(mart).count() == 0
+    assert anomalies(mart, threshold=10.0).count() == 1
+    assert anomalies(mart, threshold=10.0, min_baseline=2000).count() == 0
+
+
+def test_volume_check_treats_a_missing_crime_type_month_as_zero(
+    spark: SparkSession,
+) -> None:
+    """The force has data that month (another type), so the missing type fell to 0."""
+    mart = monthly_mart(
+        spark,
+        {
+            MET_BURGLARY: [1000, 1000, 1000, None],
+            ("metropolitan", "Robbery"): [900, 900, 900, 900],
+        },
+    )
+    result = anomalies(mart)
+    assert flags(result) == [("metropolitan", "Burglary", month_n(3), 0)]
+    assert result.first()["pct_change"] == -100.0
+
+
+def test_volume_check_needs_three_consecutive_months_of_history(
+    spark: SparkSession,
+) -> None:
+    """A force with no data in 2026-03 has no baseline for the months that follow."""
+    mart = monthly_mart(spark, {MET_BURGLARY: [1000, 1000, None, 1000, 100]})
+    assert anomalies(mart).count() == 0
+
+
+def test_volume_check_compares_each_force_only_with_itself(spark: SparkSession) -> None:
+    mart = monthly_mart(
+        spark,
+        {
+            MET_BURGLARY: [1000, 1000, 1000, 1000],
+            ("city-of-london", "Burglary"): [800, 800, 800, 300],
+        },
+    )
+    assert flags(anomalies(mart)) == [("city-of-london", "Burglary", month_n(3), 300)]
+
+
+def test_acknowledged_entries_mark_flags_from_their_month_but_do_not_hide_them(
+    spark: SparkSession,
+) -> None:
+    mart = monthly_mart(
+        spark,
+        {
+            MET_BURGLARY: [1000, 1000, 1000, 400, 1000, 1000, 1000, 300],
+            ("metropolitan", "Robbery"): [
+                1000,
+                1000,
+                1000,
+                400,
+                1000,
+                1000,
+                1000,
+                1000,
+            ],
+            ("city-of-london", "Burglary"): [1000, 1000, 1000, 400],
+        },
+    )
+    result = {
+        (r["force"], r["crime_type"], r["month"]): (r["is_acknowledged"], r["note"])
+        for r in anomalies(mart, (MET_ACK,)).collect()
+    }
+    assert result == {
+        # 2026-04 is the entry's from_month: acknowledged, with its note.
+        ("metropolitan", "Burglary", month_n(3)): (True, "known"),
+        # 2026-08 is later: still covered (the entry is open-ended).
+        ("metropolitan", "Burglary", month_n(7)): (True, "known"),
+        # Another crime type or another force is not covered.
+        ("metropolitan", "Robbery", month_n(3)): (False, None),
+        ("city-of-london", "Burglary", month_n(3)): (False, None),
+    }
+
+
+def test_a_flag_before_the_acknowledged_month_is_not_acknowledged(
+    spark: SparkSession,
+) -> None:
+    mart = monthly_mart(spark, {MET_BURGLARY: [1000, 1000, 1000, 400]})
+    late = config.AcknowledgedAnomaly(*MET_ACK[:2], "2026-05", "known")
+    assert [r["is_acknowledged"] for r in anomalies(mart, (late,)).collect()] == [False]
+
+
+def test_acknowledged_list_must_be_unique_and_use_yyyy_mm(spark: SparkSession) -> None:
+    mart = monthly_mart(spark, {MET_BURGLARY: [1000, 1000, 1000, 400]})
+    with pytest.raises(gold.GoldError, match="duplicate"):
+        anomalies(mart, (MET_ACK, MET_ACK))
+    bad = config.AcknowledgedAnomaly(*MET_ACK[:2], "2026-4", "x")
+    with pytest.raises(gold.GoldError, match="YYYY-MM"):
+        anomalies(mart, (bad,))
+
+
+def test_every_flag_is_logged_at_warning_and_counted(
+    spark: SparkSession, caplog: pytest.LogCaptureFixture
+) -> None:
+    mart = monthly_mart(
+        spark,
+        {
+            MET_BURGLARY: [1000, 1000, 1000, 400],
+            ("metropolitan", "Robbery"): [1000, 1000, 1000, 400],
+        },
+    )
+    with caplog.at_level("WARNING", logger="uk_crime.gold"):
+        counts = gold.log_volume_anomalies(anomalies(mart, (MET_ACK,)))
+
+    assert counts == {"flagged": 2, "acknowledged": 1, "unacknowledged": 1}
+    messages = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert len(messages) == 2
+    assert any("Burglary" in m and "(acknowledged)" in m for m in messages)
+    assert any("Robbery" in m and "NOT acknowledged" in m for m in messages)
+
+
+def test_reconciliation_is_unaffected_by_the_check(spark: SparkSession) -> None:
+    """The table is not an input to reconcile_gold: the numbers match without it."""
+    rows = [crime(month=month_n(i)) for i in range(3) for _ in range(3)] + [
+        crime(month=month_n(3))
+    ]
+    crimes = silver_df(spark, rows)
+    built = gold.build_gold(crimes)
+    assert built["dq_volume_anomalies"].count() == 0  # baselines are far below 500
+
+    with_check = gold.reconcile_gold(built, crimes.count(), 6, 12)
+    without = gold.reconcile_gold(
+        {n: df for n, df in built.items() if n != "dq_volume_anomalies"},
+        crimes.count(),
+        6,
+        12,
+    )
+    assert with_check == without
+
+
+def test_default_thresholds_and_acknowledged_entry() -> None:
+    assert config.VOLUME_ANOMALY_THRESHOLD_PCT == 50.0
+    assert config.VOLUME_ANOMALY_MIN_BASELINE == 500
+    (entry,) = config.ACKNOWLEDGED_VOLUME_ANOMALIES
+    assert (entry.force, entry.crime_type, entry.from_month) == (
+        "metropolitan",
+        "Criminal damage and arson",
+        "2026-05",
+    )
+    assert "unverified" in entry.note
+
+
+def test_the_table_has_the_expected_columns_and_is_part_of_gold(
+    spark: SparkSession,
+) -> None:
+    assert "dq_volume_anomalies" in gold.TABLES
+    mart = monthly_mart(spark, {MET_BURGLARY: [1000, 1000, 1000, 400]})
+    expected = [f.name for f in gold.SCHEMAS["dq_volume_anomalies"]][:-1]
+    assert anomalies(mart).columns == expected
+
+
 # ------------------------------------------------------------ primary-key uniqueness
 
 
@@ -834,17 +1090,38 @@ def test_gold_refuses_to_run_when_silver_is_inconsistent(
     assert not config.GOLD_DIR.exists()
 
 
+@pytest.fixture
+def one_volume_flag(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Rows that make dq_volume_anomalies hold exactly one flag.
+
+    Metropolitan Burglary has 2 rows a month for 2026-02..04 and none in 2026-05, a month
+    in which the force does have data (a Robbery row). The baseline minimum is lowered to 1
+    so that such a small count can be flagged.
+    """
+    monkeypatch.setattr(config, "VOLUME_ANOMALY_MIN_BASELINE", 1)
+    return [crime(month=date(2026, m, 1)) for m in (2, 3, 4) for _ in range(2)] + [
+        crime(month=date(2026, 5, 1), crime_type="Robbery")
+    ]
+
+
 @pytest.mark.slow
 def test_run_gold_writes_every_table_with_the_same_silver_run_id(
-    spark: SparkSession, lakehouse: None
+    spark: SparkSession, lakehouse: None, one_volume_flag: list[dict[str, Any]]
 ) -> None:
-    write_silver(spark, sample_rows(), run_id="run-A")
+    rows = sample_rows() + one_volume_flag
+    write_silver(spark, rows, run_id="run-A")
     stats = gold.run_gold(spark)
 
     assert stats["silver_run_id"] == "run-A"
     assert gold.assert_gold_consistent(spark) == "run-A"
     assert set(stats["counts"]) == set(gold.TABLES)
-    assert stats["counts"]["fct_crimes"] == 4
+    assert stats["counts"]["fct_crimes"] == len(rows)
+    assert stats["counts"]["dq_volume_anomalies"] == 1
+    assert stats["volume_anomalies"] == {
+        "flagged": 1,
+        "acknowledged": 0,
+        "unacknowledged": 1,
+    }
     for name in gold.TABLES:
         ids = gold_table(spark, name).select("_silver_run_id").distinct().collect()
         assert [r[0] for r in ids] == ["run-A"], name
@@ -873,8 +1150,27 @@ def test_gold_consistency_fails_when_a_table_is_missing(
 
 
 @pytest.mark.slow
-def test_rerun_gives_identical_output(spark: SparkSession, lakehouse: None) -> None:
-    write_silver(spark, sample_rows())
+def test_an_empty_anomaly_table_still_carries_the_silver_run_id(
+    spark: SparkSession, lakehouse: None
+) -> None:
+    """No flags is the normal case: the table is empty, and its run id is in the commit."""
+    write_silver(spark, sample_rows(), run_id="run-A")
+    stats = gold.run_gold(spark)
+
+    assert stats["counts"]["dq_volume_anomalies"] == 0
+    assert stats["volume_anomalies"] == {
+        "flagged": 0,
+        "acknowledged": 0,
+        "unacknowledged": 0,
+    }
+    assert gold.assert_gold_consistent(spark) == "run-A"
+
+
+@pytest.mark.slow
+def test_rerun_gives_identical_output(
+    spark: SparkSession, lakehouse: None, one_volume_flag: list[dict[str, Any]]
+) -> None:
+    write_silver(spark, sample_rows() + one_volume_flag)
     gold.run_gold(spark)
     first = {n: gold.table_fingerprint(gold_table(spark, n)) for n in gold.TABLES}
     gold.run_gold(spark)
