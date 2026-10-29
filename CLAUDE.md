@@ -46,15 +46,27 @@ src/uk_crime/
   window, exclusions and non-ASB rule as mart_outcome_rates; share within borough and crime
   type). is_london is a name match against LONDON_AUTHORITIES
   (known limitation, see docs/data-caveats.md). All tables carry _silver_run_id; gold
-  calls assert_silver_consistent() first and assert_gold_consistent() checks that all eleven
+  calls assert_silver_consistent() first and assert_gold_consistent() checks that all twelve
   tables share one _silver_run_id. An unmapped force, crime type or outcome raises.
+  dq_volume_anomalies (a check table, not a mart): for each (force, crime_type, month) it
+  compares crime_count with the median of the previous 3 calendar months (a crime type with
+  no rows in a month the force has data for counts as 0) and lists the months where
+  |change| > VOLUME_ANOMALY_THRESHOLD_PCT (50) and the baseline median >=
+  VOLUME_ANOMALY_MIN_BASELINE (500). Columns: force, crime_type, month, crime_count,
+  baseline_median, pct_change, is_acknowledged, note. A flag whose force and crime type are
+  in config.ACKNOWLEDGED_VOLUME_ANOMALIES (from_month onwards) is marked acknowledged with
+  its note, never hidden. It never fails a run: each flag is logged at WARNING and the
+  counts (flagged, acknowledged, unacknowledged) are in run_gold's returned statistics and
+  the exported reconciliation table. A new unacknowledged flag is a prompt to investigate,
+  then to acknowledge it in config with an evidence note (see docs/data-caveats.md,
+  "Metropolitan Police source changes, 2026-04/05").
   Outcome maturity rule: exclude the smallest number of most-recent months so that every
   remaining month newer than the baseline window has a placeholder share within 2pp of the
   baseline (median of months older than 18 months). Set from archive 2026-08; re-check
   when a new archive lands (analyses/profile_outcome_maturity.py, evidence in
   docs/data-caveats.md). 2024-10 (25.6% placeholder share) is excluded from this mart only.
 - export.py: after gold.assert_gold_consistent(), writes a small Parquet snapshot of five marts
-  (plus LSOA centroids), a reconciliation table from silver's run summary
+  and dq_volume_anomalies (plus LSOA centroids), a reconciliation table from silver's run summary
   (SILVER_DIR/run_summary.json, written at the end of each silver run) and snapshot.json to
   dashboard/data/ (committed, under 1 MB). It refuses a run summary from a different silver
   run than the one gold was built from.

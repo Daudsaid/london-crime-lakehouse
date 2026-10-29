@@ -1,7 +1,7 @@
 """Gold (T): star schema and marts built only from silver.
 
-Full rebuild on every run: dimensions, fct_crimes and five marts, each written as one
-atomic Delta overwrite and tagged with _silver_run_id (silver's _run_id) for lineage.
+Full rebuild on every run: dimensions, fct_crimes, five marts and the dq_volume_anomalies
+check table, each written as one atomic Delta overwrite and tagged with _silver_run_id (silver's _run_id) for lineage.
 gold first calls silver.assert_silver_consistent(); every transformation is Spark SQL over
 temp views wrapped in a function that takes and returns DataFrames.
 
@@ -103,6 +103,7 @@ TABLES = (
     "mart_lsoa_ranking",
     "mart_borough_monthly",
     "mart_borough_outcomes",
+    "dq_volume_anomalies",
 )
 MONTH_NAMES = [
     "January",
@@ -215,6 +216,12 @@ SCHEMAS: dict[str, StructType] = {
         ("share_of_crime_type", DoubleType()), ("first_month", DateType()),
         ("last_month", DateType()), ("months_used", IntegerType()),
         ("excluded_months", StringType()), _LINEAGE,
+    ),
+    "dq_volume_anomalies": _schema(
+        ("force", StringType()), ("crime_type", StringType()), ("month", DateType()),
+        ("crime_count", LongType()), ("baseline_median", DoubleType()),
+        ("pct_change", DoubleType()), ("is_acknowledged", BooleanType()),
+        ("note", StringType()), _LINEAGE,
     ),
 }  # fmt: skip
 
@@ -608,6 +615,94 @@ def build_mart_borough_outcomes(
     """)
 
 
+def build_dq_volume_anomalies(
+    monthly: DataFrame,
+    threshold_pct: float,
+    min_baseline: int,
+    acknowledged: Sequence[config.AcknowledgedAnomaly],
+) -> DataFrame:
+    """Months whose count is far from the median of the previous three months.
+
+    Input: mart_monthly_crimes. For every (force, crime_type) and each month the force has
+    data for (a crime type with no rows that month counts as 0), the baseline is the median
+    of the previous three months; a month is skipped unless those three are the three
+    calendar months directly before it. A row is returned when the baseline is at least
+    min_baseline and |change| exceeds threshold_pct percent. is_acknowledged and note come
+    from `acknowledged` (matching force and crime type, month on or after from_month).
+    Flags are informational: this table never fails a run.
+    """
+    spark = monthly.sparkSession
+    keys = [(a.force, a.crime_type) for a in acknowledged]
+    if len(keys) != len(set(keys)):
+        raise GoldError(f"duplicate ACKNOWLEDGED_VOLUME_ANOMALIES entries: {keys}")
+    for a in acknowledged:
+        if not MONTH_RE.match(a.from_month):
+            raise GoldError(f"invalid from_month {a.from_month!r} (expected YYYY-MM)")
+    ack = spark.createDataFrame(
+        [(a.force, a.crime_type, a.from_month, a.note) for a in acknowledged],
+        "force string, crime_type string, from_month string, note string",
+    )
+    _register(monthly=monthly, acknowledged=ack)
+    return spark.sql(f"""
+        WITH months AS (SELECT DISTINCT force_key, month FROM monthly),
+        types AS (SELECT DISTINCT force_key, crime_type FROM monthly),
+        counts AS (
+            SELECT m.force_key, t.crime_type, m.month,
+                   coalesce(c.crime_count, 0) AS crime_count
+            FROM months m
+            JOIN types t ON t.force_key = m.force_key
+            LEFT JOIN monthly c ON c.force_key = m.force_key
+                 AND c.crime_type = t.crime_type AND c.month = m.month
+        ),
+        lagged AS (
+            SELECT *,
+                   lag(crime_count, 1) OVER w AS p1, lag(crime_count, 2) OVER w AS p2,
+                   lag(crime_count, 3) OVER w AS p3, lag(month, 3) OVER w AS month_3_back
+            FROM counts
+            WINDOW w AS (PARTITION BY force_key, crime_type ORDER BY month)
+        ),
+        scored AS (
+            SELECT force_key, crime_type, month, crime_count,
+                   cast(sort_array(array(p1, p2, p3))[1] AS double) AS baseline_median
+            FROM lagged
+            WHERE p3 IS NOT NULL AND month_3_back = add_months(month, -3)
+        )
+        SELECT s.force_key AS force, s.crime_type, s.month, s.crime_count,
+               s.baseline_median,
+               (s.crime_count - s.baseline_median) / s.baseline_median * 100 AS pct_change,
+               a.force IS NOT NULL AS is_acknowledged, a.note
+        FROM scored s
+        LEFT JOIN acknowledged a ON a.force = s.force_key
+             AND a.crime_type = s.crime_type
+             AND s.month >= to_date(concat(a.from_month, '-01'))
+        WHERE s.baseline_median >= {int(min_baseline)}
+          AND abs((s.crime_count - s.baseline_median) / s.baseline_median * 100)
+              > {float(threshold_pct)!r}
+    """)
+
+
+def log_volume_anomalies(anomalies: DataFrame) -> dict[str, int]:
+    """Log every flag at WARNING (acknowledged ones too) and return the counts.
+
+    The table is small (only flagged rows), so collecting it is fine. Never raises.
+    """
+    rows = anomalies.orderBy("month", "force", "crime_type").collect()
+    for r in rows:
+        logger.warning(
+            "volume anomaly: %s / %s / %s count=%d baseline_median=%.0f change=%+.1f%% "
+            "(%s)",
+            r["force"], r["crime_type"], r["month"].strftime("%Y-%m"), r["crime_count"],
+            r["baseline_median"], r["pct_change"],
+            "acknowledged" if r["is_acknowledged"] else "NOT acknowledged",
+        )  # fmt: skip
+    acknowledged = sum(1 for r in rows if r["is_acknowledged"])
+    return {
+        "flagged": len(rows),
+        "acknowledged": acknowledged,
+        "unacknowledged": len(rows) - acknowledged,
+    }
+
+
 # ---------------------------------------------------------------- orchestration
 
 
@@ -619,6 +714,7 @@ def build_gold(crimes: DataFrame) -> dict[str, DataFrame]:
     dim_outcome = build_dim_outcome(crimes)
     dim_lsoa = build_dim_lsoa(crimes)
     fct = build_fct_crimes(crimes)
+    mart_monthly = build_mart_monthly_crimes(fct, dim_date, dim_force, dim_crime_type)
     return {
         "dim_date": dim_date,
         "dim_force": dim_force,
@@ -626,9 +722,7 @@ def build_gold(crimes: DataFrame) -> dict[str, DataFrame]:
         "dim_outcome": dim_outcome,
         "dim_lsoa": dim_lsoa,
         "fct_crimes": fct,
-        "mart_monthly_crimes": build_mart_monthly_crimes(
-            fct, dim_date, dim_force, dim_crime_type
-        ),
+        "mart_monthly_crimes": mart_monthly,
         "mart_outcome_rates": build_mart_outcome_rates(
             fct,
             dim_date,
@@ -651,6 +745,12 @@ def build_gold(crimes: DataFrame) -> dict[str, DataFrame]:
             dim_outcome,
             config.OUTCOME_MATURITY_MONTHS,
             config.OUTCOME_EXCLUDED_MONTHS,
+        ),
+        "dq_volume_anomalies": build_dq_volume_anomalies(
+            mart_monthly,
+            config.VOLUME_ANOMALY_THRESHOLD_PCT,
+            config.VOLUME_ANOMALY_MIN_BASELINE,
+            config.ACKNOWLEDGED_VOLUME_ANOMALIES,
         ),
     }
 
@@ -940,7 +1040,16 @@ def run_gold(
         "silver_run_id=%s written to all %d gold tables", silver_run_id, len(TABLES)
     )
     logger.info("reconciliation=%s", stats)
-    return {"silver_run_id": silver_run_id, "counts": counts, "reconciliation": stats}
+    anomaly_counts = log_volume_anomalies(
+        spark.read.format("delta").load(str(table_path("dq_volume_anomalies")))
+    )
+    logger.info("volume_anomalies=%s", anomaly_counts)
+    return {
+        "silver_run_id": silver_run_id,
+        "counts": counts,
+        "reconciliation": stats,
+        "volume_anomalies": anomaly_counts,
+    }
 
 
 def main(argv: Sequence[str] | None = None) -> int:

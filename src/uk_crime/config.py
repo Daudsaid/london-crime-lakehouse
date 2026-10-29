@@ -6,6 +6,7 @@ Volume (e.g. DATA_DIR=/Volumes/main/crime/data) without touching any other code.
 
 import os
 from pathlib import Path
+from typing import NamedTuple
 
 PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]
 
@@ -55,6 +56,39 @@ OUTCOME_EXCLUDED_MONTHS: tuple[str, ...] = tuple(
 )
 # mart_lsoa_ranking covers the newest LSOA_RANKING_MONTHS months.
 LSOA_RANKING_MONTHS: int = int(os.environ.get("UK_CRIME_LSOA_RANKING_MONTHS", "12"))
+# dq_volume_anomalies flags a (force, crime_type, month) whose crime_count differs from the
+# median of the previous 3 months by more than VOLUME_ANOMALY_THRESHOLD_PCT percent, when
+# that baseline median is at least VOLUME_ANOMALY_MIN_BASELINE rows (small counts are noisy).
+VOLUME_ANOMALY_THRESHOLD_PCT: float = float(
+    os.environ.get("UK_CRIME_VOLUME_ANOMALY_THRESHOLD_PCT", "50")
+)
+VOLUME_ANOMALY_MIN_BASELINE: int = int(
+    os.environ.get("UK_CRIME_VOLUME_ANOMALY_MIN_BASELINE", "500")
+)
+
+
+class AcknowledgedAnomaly(NamedTuple):
+    """A known source change: flags for this force and crime type from from_month (YYYY-MM)
+    onwards are marked is_acknowledged and carry the note. Still flagged, never hidden."""
+
+    force: str
+    crime_type: str
+    from_month: str
+    note: str
+
+
+ACKNOWLEDGED_VOLUME_ANOMALIES: tuple[AcknowledgedAnomaly, ...] = (
+    AcknowledgedAnomaly(
+        force="metropolitan",
+        crime_type="Criminal damage and arson",
+        from_month="2026-05",
+        note=(
+            "Source change: Met CD&A fell ~94% while other types rose; consistent with "
+            "reclassification (unverified). Coincides with the Met placeholder-text change "
+            "(2026-04) and the out-of-London drop (2026-05)."
+        ),
+    ),
+)
 HTTP_TIMEOUT: tuple[float, float] = (10.0, 60.0)  # (connect, read) seconds
 HTTP_MAX_ATTEMPTS: int = 5
 

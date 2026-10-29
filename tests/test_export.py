@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
 
 from tests.test_gold import asb, crime, silver_df
 from uk_crime import config, export, gold, silver
@@ -122,6 +123,55 @@ def test_reconciliation_table_adds_up_to_the_bronze_rows(spark: SparkSession) ->
     assert table[("gold", "orphan_fact_keys")]["rows"] == 0
     assert table[("quarantine", "conflicting_duplicate_crime_id")]["rows"] == 1
     assert table[("silver_flags", "asb_rows")]["rows"] == 2
+    assert table[("volume_anomalies", "flagged")]["rows"] == 0
+    assert table[("volume_anomalies", "unacknowledged")]["rows"] == 0
+
+
+def test_flagged_anomalies_are_exported_and_counted_in_the_reconciliation(
+    spark: SparkSession,
+) -> None:
+    rows = sample_rows()
+    tables = gold_tables(spark, rows)
+    flagged = spark.createDataFrame(
+        [
+            (
+                "metropolitan",
+                "Robbery",
+                date(2026, 8, 1),
+                400,
+                1000.0,
+                -60.0,
+                False,
+                None,
+            ),
+            (
+                "metropolitan",
+                "Burglary",
+                date(2026, 7, 1),
+                100,
+                1000.0,
+                -90.0,
+                True,
+                "n",
+            ),
+        ],
+        "force string, crime_type string, month date, crime_count long, "
+        "baseline_median double, pct_change double, is_acknowledged boolean, note string",
+    ).withColumn("_silver_run_id", F.lit(RUN_ID))
+    tables = {**tables, "dq_volume_anomalies": flagged}
+    exports = export.export_tables(tables, summary_for(rows))
+
+    assert (
+        exports["dq_volume_anomalies"].columns
+        == (export.EXPORT_COLUMNS["dq_volume_anomalies"])
+    )
+    assert [r["month"] for r in exports["dq_volume_anomalies"].collect()] == [
+        date(2026, 7, 1),
+        date(2026, 8, 1),
+    ]
+    table = {(r["group"], r["item"]): r for r in exports["reconciliation"].collect()}
+    assert table[("volume_anomalies", "flagged")]["rows"] == 2
+    assert table[("volume_anomalies", "unacknowledged")]["rows"] == 1
 
 
 def test_export_refuses_a_summary_from_another_silver_run(spark: SparkSession) -> None:

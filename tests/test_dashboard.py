@@ -99,6 +99,18 @@ def write_fake_snapshot(folder: Path) -> None:
     ).to_parquet(folder / "mart_borough_outcomes.parquet")
     pd.DataFrame(
         {
+            "force": ["metropolitan", "metropolitan"],
+            "crime_type": ["Criminal damage and arson", "Robbery"],
+            "month": pd.to_datetime(["2026-05-01", "2026-08-01"]),
+            "crime_count": [221, 2000],
+            "baseline_median": [4322.0, 1000.0],
+            "pct_change": [-94.9, 100.0],
+            "is_acknowledged": [True, False],
+            "note": ["Source change (unverified).", None],
+        }
+    ).to_parquet(folder / "dq_volume_anomalies.parquet")
+    pd.DataFrame(
+        {
             "group": ["reconciliation", "reconciliation"],
             "item": ["bronze_rows", "quarantined"],
             "rows": [101, 1],
@@ -282,6 +294,63 @@ def test_trend_figure_filters_by_borough_and_asb(fake: dict) -> None:
     }
 
 
+def long_monthly(first: str, last: str) -> pd.DataFrame:
+    """One Camden row per month from first to last (borough monthly columns)."""
+    months = pd.date_range(first, last, freq="MS")
+    return pd.DataFrame(
+        {
+            "local_authority": "Camden",
+            "month": months,
+            "crime_type": "Burglary",
+            "is_asb": False,
+            "crime_count": 10,
+        }
+    )
+
+
+def met_change_lines(figure) -> list:
+    return [
+        shape
+        for shape in figure.layout.shapes
+        if shape.type == "line" and shape.x0 == app.MET_CHANGE_MONTH
+    ]
+
+
+def test_trend_marks_the_met_recording_change_when_the_month_is_on_the_chart() -> None:
+    monthly = long_monthly("2026-01-01", "2026-08-01")
+    for borough in ("Camden", app.ALL_LONDON):
+        figure = app.trend_figure(monthly, borough, True)
+        assert len(met_change_lines(figure)) == 1
+        assert [a.text for a in figure.layout.annotations] == ["Met recording change"]
+        assert figure.layout.annotations[0].x == pd.Timestamp("2026-05-01")
+
+
+def test_trend_has_no_line_when_the_month_is_outside_the_data(fake: dict) -> None:
+    figure = app.trend_figure(fake["mart_borough_monthly"], "Camden", True)  # Jul-Aug
+    assert not figure.layout.shapes and not figure.layout.annotations
+
+
+def test_trend_has_no_met_line_for_the_city_of_london() -> None:
+    monthly = long_monthly("2026-01-01", "2026-08-01").assign(
+        local_authority="City of London"
+    )
+    figure = app.trend_figure(monthly, "City of London", True)
+    assert not figure.layout.shapes and not figure.layout.annotations
+
+
+def test_anomalies_table_is_formatted_newest_first(fake: dict) -> None:
+    shown = app.anomalies_table(fake["dq_volume_anomalies"])
+
+    assert list(shown.columns) == [
+        "Force", "Crime type", "Month", "Count", "Baseline median", "Change",
+        "Status", "Note",
+    ]  # fmt: skip
+    assert shown["Month"].tolist() == ["2026-08", "2026-05"]
+    assert shown["Change"].tolist() == ["+100.0%", "-94.9%"]
+    assert shown["Status"].tolist() == ["Not acknowledged", "Acknowledged"]
+    assert shown["Note"].tolist() == ["", "Source change (unverified)."]
+
+
 def test_top_crime_types_figure_filters_by_borough_and_drops_asb(fake: dict) -> None:
     monthly = fake["mart_borough_monthly"]
     camden = app.top_crime_types_figure(monthly, BOUNDS, "Camden")
@@ -461,6 +530,16 @@ def test_the_data_quality_panel_and_footer_are_unchanged() -> None:
     assert "excluding 2024-10 (outlier)" in captions
     assert "not where residents are at higher risk" in captions
     assert "Snapshot of archive" in captions
+
+
+def test_the_data_quality_panel_lists_the_flagged_volume_anomalies() -> None:
+    page = run_page()
+    assert page.subheader[-1].value == "Volume anomalies"
+    committed = pd.read_parquet(COMMITTED_DATA / "dq_volume_anomalies.parquet")
+    shown = page.dataframe[-1].value  # the anomalies table is the last one on the page
+    assert len(shown) == len(committed) > 0
+    assert set(shown["Status"]) <= {"Acknowledged", "Not acknowledged"}
+    assert "Criminal damage and arson" in set(shown["Crime type"])
 
 
 # ----------------------------------------------------------- committed snapshot
