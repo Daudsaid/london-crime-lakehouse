@@ -10,7 +10,7 @@ dependencies = [
 
 [dependency-groups]
 dashboard = [
-    "pandas<4",
+    "pandas<3",
     "plotly>=7.1.0",
     "streamlit>=1.66.1",
 ]
@@ -33,6 +33,10 @@ module-name = "uk_crime"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# A pandas 3 install makes PySpark warn that it does not support it; fail on that message only.
+filterwarnings = [
+    "error:PySpark does not yet fully support pandas:FutureWarning",
+]
 markers = [
     "slow: end-to-end tests that run a whole layer and write real Delta tables (deselect with -m 'not slow')",
 ]

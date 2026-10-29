@@ -51,7 +51,7 @@ packaging==26.3
     #   altair
     #   plotly
     #   streamlit
-pandas==3.1.0
+pandas==2.3.3
     # via streamlit
 pillow==13.0.0
     # via streamlit
@@ -66,6 +66,8 @@ python-dateutil==3.0.0
     # via pandas
 python-multipart==0.0.32
     # via streamlit
+pytz==2026.6
+    # via pandas
 referencing==0.37.0
     # via
     #   jsonschema
