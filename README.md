@@ -6,7 +6,9 @@ A local PySpark and Delta Lake ELT pipeline over that street-crime data, with a 
 
 PySpark 4 · Delta Lake · Python 3.12 · uv · pytest · GitHub Actions
 
-[![CI](https://github.com/Daudsaid/uk-crime-pipeline/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Daudsaid/uk-crime-pipeline/actions/workflows/ci.yml)
+**Live dashboard: <https://london-crime-lakehouse.streamlit.app/>**
+
+[![CI](https://github.com/Daudsaid/london-crime-lakehouse/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Daudsaid/london-crime-lakehouse/actions/workflows/ci.yml)
 
 ## What it does
 
@@ -84,7 +86,7 @@ Outcome shares for three crime types. The period is 2023-09 to 2025-04, excludin
 
 ## Dashboard
 
-A small [Streamlit](dashboard/app.py) app reads a committed snapshot of the gold layer (`dashboard/data/`: six Parquet files and a `snapshot.json`, 223 KB in total), so it needs neither Spark nor a pipeline run. A sidebar selector picks "All London" or one of the 33 boroughs, and the choice is kept in the URL (`?borough=Camden`), so a view can be shared; an unknown name falls back to All London. For the selection it shows:
+The dashboard is live at <https://london-crime-lakehouse.streamlit.app/>. A small [Streamlit](dashboard/app.py) app reads a committed snapshot of the gold layer (`dashboard/data/`: six Parquet files and a `snapshot.json`, 223 KB in total), so it needs neither Spark nor a pipeline run. A sidebar selector picks "All London" or one of the 33 boroughs, and the choice is kept in the URL (`?borough=Camden`), so a view can be shared; an unknown name falls back to All London. For the selection it shows:
 
 - headline figures: crimes in the last 12 months, anti-social behaviour share, and the charged-or-at-court share for mature months, plus a line giving the borough's share of London's recorded crime
 - monthly records by crime type, and the top crime types of the last 12 months
@@ -94,7 +96,7 @@ A small [Streamlit](dashboard/app.py) app reads a committed snapshot of the gold
 
 Every borough view carries the caveat that these are counts, not rates (there is no population denominator yet) and cover London LSOAs only.
 
-_Screenshot to be added._
+![London Crime Lakehouse dashboard](docs/images/dashboard.png)
 
 ```bash
 make dashboard   # first run installs the optional dashboard dependency group
@@ -119,8 +121,8 @@ The full list, with numbers, is in [docs/data-caveats.md](docs/data-caveats.md).
 Prerequisites: Java 17 and [uv](https://docs.astral.sh/uv/). Developed on macOS; CI runs on Ubuntu 24.04.
 
 ```bash
-git clone https://github.com/Daudsaid/uk-crime-pipeline.git
-cd uk-crime-pipeline
+git clone https://github.com/Daudsaid/london-crime-lakehouse.git
+cd london-crime-lakehouse
 uv sync
 make help        # list the targets
 make pipeline    # extract --latest, then bronze, silver and gold
