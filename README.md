@@ -106,7 +106,7 @@ Every borough view carries the caveat that these are counts, not rates (there is
 <table>
   <tr>
     <td width="33%"><a href="docs/images/dashboard-outcomes.png"><img src="docs/images/dashboard-outcomes.png" alt="Top crime types and outcomes by crime type"></a><br><sub>Top crime types and outcome groups by crime type.</sub></td>
-    <td width="33%"><a href="docs/images/dashboard-hotspots.png"><img src="docs/images/dashboard-hotspots.png" alt="LSOA hotspot map and top-ten table"></a><br><sub>LSOA hotspot map and the ten LSOAs with the most crimes.</sub></td>
+    <td width="33%"><a href="docs/images/dashboard-hotspots.png"><img src="docs/images/dashboard-hotspots.png" alt="LSOA hotspot map of Greater London"></a><br><sub>LSOA hotspot map, zoomed to fit Greater London.</sub></td>
     <td width="33%"><a href="docs/images/dashboard-data-quality.png"><img src="docs/images/dashboard-data-quality.png" alt="Data quality reconciliation table"></a><br><sub>Data quality: the bronze-to-silver reconciliation.</sub></td>
   </tr>
 </table>
