@@ -29,7 +29,7 @@ jobs:
           java-version: "17"
 
       # setup-uv stopped publishing major tags in v8, so it is pinned to a release tag.
-      - uses: astral-sh/setup-uv@v10.3.2
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           enable-cache: true
 
